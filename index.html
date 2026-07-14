@@ -49,12 +49,20 @@
   <!-- Google Apps Script App via iframe -->
   <iframe 
     id="app-frame"
-    src="https://script.google.com/macros/s/AKfycbx5wBJQ542JamHOfs7Xtc98RMYWXJ1yJw00aA0udNTKPy6xZHAmeUWgO9eyCLlqRIVX/exec"
+    src="https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec"
     allow="camera; geolocation; clipboard-write"
     sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
   ></iframe>
 
   <script>
+    // === FIX: Cegah WebView close saat tombol back/gesture ditekan ===
+    // Push history kosong agar WebView tidak langsung close
+    history.pushState(null, '', location.href);
+    window.addEventListener('popstate', function(event) {
+      history.pushState(null, '', location.href);
+    });
+
+    // Sembunyikan loading setelah iframe loaded
     var frame = document.getElementById('app-frame');
     var loading = document.getElementById('loading');
     var loadTimeout = setTimeout(function() {
@@ -66,6 +74,10 @@
       setTimeout(function() {
         loading.classList.add('hide');
       }, 1500);
+    };
+
+    frame.onerror = function() {
+      loading.innerHTML = '<div class="icon"><svg viewBox="0 0 24 24" fill="white"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div><div class="text">Gagal memuat aplikasi</div>';
     };
   </script>
 </body>
