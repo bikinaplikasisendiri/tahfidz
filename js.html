@@ -1,0 +1,3006 @@
+<script>
+  // --- VARIABEL GLOBAL ---
+  var curUser = null;
+  var santriDB = [];
+  var selectedSantriNIS = null;
+  var originalNisForEdit = null;
+  var tempSetoranData = null;
+  var pendingDeleteAction = null;
+  var prayerCountdownInterval = null;
+  var bigClockInterval = null;
+  var sessionCheckInterval = null;
+  
+  // SESSION TIMEOUT: 8 jam (dalam milidetik)
+  var SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000;
+  // Cek session setiap 1 menit
+  var SESSION_CHECK_INTERVAL_MS = 60 * 1000;
+  
+  // Juz Detail Variables
+  var currentJuzFilter = 'all';
+  var currentJuzPage = 0;
+  var currentJuzNumber = 0;
+  var juzHasMore = false;
+  var currentViewingNIS = null; // NIS santri yang sedang dilihat
+
+  // LOGIKA LOKASI (Load dari memori HP)
+  var savedCity = localStorage.getItem('hifdzul_city') || "Jakarta";
+  var savedLat = localStorage.getItem('hifdzul_lat');
+  var savedLong = localStorage.getItem('hifdzul_long');
+
+  // --- SESSION TIMEOUT FUNCTIONS ---
+  
+  // Cek apakah session masih valid
+  function isSessionValid_() {
+    if (!curUser || !curUser.loginTime) return false;
+    var now = Date.now();
+    var elapsed = now - curUser.loginTime;
+    return elapsed < SESSION_TIMEOUT_MS;
+  }
+  
+  // Dalam berapa menit session akan expired
+  function getSessionRemainingMinutes_() {
+    if (!curUser || !curUser.loginTime) return 0;
+    var now = Date.now();
+    var elapsed = now - curUser.loginTime;
+    var remaining = SESSION_TIMEOUT_MS - elapsed;
+    return Math.max(0, Math.ceil(remaining / 60000));
+  }
+  
+  // Update loginTime (reset timeout) saat user aktif
+  function refreshSession_() {
+    if (curUser) {
+      curUser.loginTime = Date.now();
+      localStorage.setItem('hifdzul_user', JSON.stringify(curUser));
+    }
+  }
+  
+  // Force logout karena session expired
+  function forceLogout_(reason) {
+    // Bersihkan interval
+    if (sessionCheckInterval) {
+      clearInterval(sessionCheckInterval);
+      sessionCheckInterval = null;
+    }
+    if (prayerCountdownInterval) {
+      clearInterval(prayerCountdownInterval);
+      prayerCountdownInterval = null;
+    }
+    if (bigClockInterval) {
+      clearInterval(bigClockInterval);
+      bigClockInterval = null;
+    }
+    
+    // Tampilkan pesan sebelum logout
+    var msg = reason || 'Sesi Anda telah berakhir. Silakan login kembali.';
+    showToast(msg, 'warning');
+    
+    // Bersihkan session
+    curUser = null;
+    localStorage.removeItem('hifdzul_user');
+    document.getElementById('username').value = '';
+    document.getElementById('password').value = '';
+    
+    // Kembali ke halaman login
+    setTimeout(function() {
+      changeScreen('screen-welcome');
+    }, 1500);
+  }
+  
+  // Mulai interval pengecekan session
+  function startSessionChecker_() {
+    // Bersihkan interval lama jika ada
+    if (sessionCheckInterval) {
+      clearInterval(sessionCheckInterval);
+    }
+    
+    sessionCheckInterval = setInterval(function() {
+      if (curUser && !isSessionValid_()) {
+        forceLogout_('Sesi 8 jam telah habis. Silakan login kembali.');
+      }
+    }, SESSION_CHECK_INTERVAL_MS);
+  }
+  
+  // Reset session timer saat user berinteraksi
+  function setupActivityTracker_() {
+    var events = ['mousedown', 'keydown', 'touchstart', 'scroll'];
+    var throttleTimer = null;
+    
+    events.forEach(function(event) {
+      document.addEventListener(event, function() {
+        // Throttle: hanya refresh setiap 1 menit
+        if (throttleTimer) return;
+        throttleTimer = setTimeout(function() {
+          throttleTimer = null;
+        }, 60000);
+        
+        if (curUser && isSessionValid_()) {
+          refreshSession_();
+        }
+      }, { passive: true });
+    });
+  }
+
+  // --- DATABASE AL-QURAN (Nama, Jumlah Ayat, Mulai Juz) ---
+  const quranDB = [
+    {n:"Al-Fatihah",c:7,j:1},{n:"Al-Baqarah",c:286,j:1},{n:"Ali 'Imran",c:200,j:3},{n:"An-Nisa'",c:176,j:4},
+    {n:"Al-Ma'idah",c:176,j:6},{n:"Al-An'am",c:120,j:6},{n:"Al-A'raf",c:165,j:8},{n:"Al-Anfal",c:206,j:9},
+    {n:"At-Taubah",c:129,j:10},{n:"Yunus",c:129,j:11},{n:"Hud",c:109,j:11},{n:"Yusuf",c:111,j:12},
+    {n:"Ar-Ra'd",c:43,j:13},{n:"Ibrahim",c:52,j:13},{n:"Al-Hijr",c:99,j:14},{n:"An-Nahl",c:99,j:14},
+    {n:"Al-Isra'",c:128,j:15},{n:"Al-Kahf",c:110,j:15},{n:"Maryam",c:98,j:16},{n:"Ta Ha",c:135,j:16},
+    {n:"Al-Anbiya'",c:112,j:17},{n:"Al-Hajj",c:112,j:17},{n:"Al-Mu'minun",c:78,j:18},{n:"An-Nur",c:118,j:18},
+    {n:"Al-Furqan",c:77,j:18},{n:"Asy-Syu'ara'",c:227,j:19},{n:"An-Naml",c:93,j:19},{n:"Al-Qasas",c:88,j:20},
+    {n:"Al-Ankabut",c:69,j:20},{n:"Ar-Rum",c:60,j:21},{n:"Luqman",c:34,j:21},{n:"As-Sajdah",c:30,j:21},
+    {n:"Al-Ahzab",c:73,j:21},{n:"Saba'",c:54,j:22},{n:"Fatir",c:45,j:22},{n:"Ya Sin",c:83,j:22},
+    {n:"As-Saffat",c:182,j:23},{n:"Sad",c:88,j:23},{n:"Az-Zumar",c:75,j:23},{n:"Ghafir",c:85,j:24},
+    {n:"Fussilat",c:54,j:24},{n:"Asy-Syura",c:53,j:24},{n:"Az-Zukhruf",c:89,j:25},{n:"Ad-Dukhan",c:59,j:25},
+    {n:"Al-Jasiyah",c:37,j:25},{n:"Al-Ahqaf",c:35,j:26},{n:"Muhammad",c:38,j:26},{n:"Al-Fath",c:29,j:26},
+    {n:"Al-Hujurat",c:18,j:26},{n:"Qaf",c:45,j:26},{n:"Az-Zariyat",c:60,j:26},{n:"At-Tur",c:49,j:27},
+    {n:"An-Najm",c:62,j:27},{n:"Al-Qamar",c:55,j:27},{n:"Ar-Rahman",c:78,j:27},{n:"Al-Waqi'ah",c:96,j:27},
+    {n:"Al-Hadid",c:29,j:27},{n:"Al-Mujadilah",c:22,j:28},{n:"Al-Hasyr",c:24,j:28},{n:"Al-Mumtahanah",c:13,j:28},
+    {n:"As-Saff",c:14,j:28},{n:"Al-Jumu'ah",c:11,j:28},{n:"Al-Munafiqun",c:11,j:28},{n:"At-Taghabun",c:18,j:28},
+    {n:"At-Talaq",c:12,j:28},{n:"At-Tahrim",c:12,j:28},{n:"Al-Mulk",c:30,j:29},{n:"Al-Qalam",c:52,j:29},
+    {n:"Al-Haqqah",c:52,j:29},{n:"Al-Ma'arij",c:44,j:29},{n:"Nuh",c:28,j:29},{n:"Al-Jinn",c:28,j:29},
+    {n:"Al-Muzzammil",c:20,j:29},{n:"Al-Muddassir",c:56,j:29},{n:"Al-Qiyamah",c:40,j:29},{n:"Al-Insan",c:31,j:29},
+    {n:"Al-Mursalat",c:50,j:29},{n:"An-Naba'",c:40,j:30},{n:"An-Nazi'at",c:46,j:30},{n:"'Abasa",c:42,j:30},
+    {n:"At-Takwir",c:29,j:30},{n:"Al-Infitar",c:19,j:30},{n:"Al-Mutaffifin",c:36,j:30},{n:"Al-Insyiqaq",c:25,j:30},
+    {n:"Al-Buruj",c:25,j:30},{n:"At-Tariq",c:17,j:30},{n:"Al-A'la",c:19,j:30},{n:"Al-Ghasyiyah",c:26,j:30},
+    {n:"Al-Fajr",c:30,j:30},{n:"Al-Balad",c:20,j:30},{n:"Asy-Syams",c:15,j:30},{n:"Al-Lail",c:21,j:30},
+    {n:"Ad-Duha",c:11,j:30},{n:"Al-Insyirah",c:8,j:30},{n:"At-Tin",c:8,j:30},{n:"Al-'Alaq",c:19,j:30},
+    {n:"Al-Qadr",c:5,j:30},{n:"Al-Bayyinah",c:8,j:30},{n:"Az-Zalzalah",c:8,j:30},{n:"Al-'Adiyat",c:11,j:30},
+    {n:"Al-Qari'ah",c:11,j:30},{n:"At-Takasur",c:8,j:30},{n:"Al-'Asr",c:3,j:30},{n:"Al-Humazah",c:9,j:30},
+    {n:"Al-Fil",c:5,j:30},{n:"Quraisy",c:4,j:30},{n:"Al-Ma'un",c:7,j:30},{n:"Al-Kautsar",c:3,j:30},
+    {n:"Al-Kafirun",c:6,j:30},{n:"An-Nasr",c:3,j:30},{n:"Al-Lahab",c:5,j:30},{n:"Al-Ikhlas",c:4,j:30},
+    {n:"Al-Falaq",c:5,j:30},{n:"An-Nas",c:6,j:30}
+  ];
+
+
+  // --- GLOBAL FAILURE HANDLER ---
+  function handleRpcError(err) {
+    showToast('Terjadi kesalahan server. Silakan coba lagi.', 'error');
+    // Re-enable semua button yang disabled
+    document.querySelectorAll('button[disabled]').forEach(function(b) {
+      b.disabled = false;
+    });
+    // Restore button text
+    document.querySelectorAll('button').forEach(function(b) {
+      if (b.innerText === 'Menyimpan...' || b.innerText === 'Memuat...' || b.innerText === 'Menghapus...') {
+        b.innerText = b.dataset.originalText || 'Simpan';
+      }
+    });
+  }
+
+  // --- UTILS ---
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  }
+
+  function escAttr(s) {
+    if (!s) return '';
+    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  }
+
+  function compressImage(file, maxSize, quality, callback) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        var canvas = document.createElement('canvas');
+        var w = img.width;
+        var h = img.height;
+        if (w > h) {
+          if (w > maxSize) { h = h * maxSize / w; w = maxSize; }
+        } else {
+          if (h > maxSize) { w = w * maxSize / h; h = maxSize; }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        callback(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function showToast(msg, type) {
+    type = type || 'success';
+    var t = document.getElementById('toast-container');
+    var i = document.getElementById('toast-icon');
+    var m = document.getElementById('toast-msg');
+    if (!t) return;
+
+    // Reset class
+    t.className = '';
+    m.innerText = msg;
+
+    // Set icon dan warna berdasarkan tipe
+    switch(type) {
+      case 'error':
+        i.className = 'fas fa-exclamation-circle';
+        t.classList.add('toast-error');
+        break;
+      case 'warning':
+        i.className = 'fas fa-exclamation-triangle';
+        t.classList.add('toast-warning');
+        break;
+      case 'info':
+        i.className = 'fas fa-info-circle';
+        t.classList.add('toast-info');
+        break;
+      default:
+        i.className = 'fas fa-check-circle';
+        t.classList.add('toast-success');
+    }
+
+    // Tampilkan toast
+    requestAnimationFrame(function() {
+      t.classList.add('show');
+    });
+
+    // Sembunyikan setelah 3 detik
+    setTimeout(function() { t.classList.remove('show'); }, 3000);
+  }
+
+    // --- WINDOW ONLOAD (UPDATED V6.0) ---
+  window.onload = function() {
+    
+    // 1. Isi Dropdown Juz (TETAP)
+    var s = document.getElementById('val-juz');
+    var sEdit = document.getElementById('edit-setor-juz');
+    if (s) {
+      for (var i = 1; i <= 30; i++) {
+        var opt = '<option value="' + i + '">Juz ' + i + '</option>';
+        s.innerHTML += opt;
+        if(sEdit) sEdit.innerHTML += opt;
+      }
+    }
+
+    // 2. Jalankan Fitur Dashboard Baru (GANTI BAGIAN INI)
+    // Logika jam lama dihapus karena elemen 'clock-display' sudah diganti desain baru
+    startBigClock();    // Menjalankan Jam Besar (Cockpit)
+    initPrayerWidget(); // Menjalankan Jadwal Sholat & Countdown
+
+    // 3. Setup Enter Key untuk Login (TETAP)
+    var passEl = document.getElementById("password");
+    if (passEl) {
+      passEl.addEventListener("keypress", function(e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          document.getElementById("btnLogin").click();
+        }
+      });
+    }
+    
+    var cityInput = document.getElementById("input-city-name");
+    if (cityInput) {
+      cityInput.addEventListener("keypress", function(e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          applyCityManual();
+        }
+      });
+    }
+
+    // 4. CEK SESI LOGIN (UPDATED: Session Timeout)
+    var savedUser = localStorage.getItem('hifdzul_user');
+    
+    setTimeout(function() {
+        var loader = document.getElementById('loading-overlay');
+        if(loader) loader.classList.add('d-none');
+    }, 500);
+
+    if (savedUser) {
+      try {
+        curUser = JSON.parse(savedUser);
+        if (curUser && curUser.nama) {
+          // Cek apakah session masih valid
+          if (!isSessionValid_()) {
+            // Session expired, force logout
+            curUser = null;
+            localStorage.removeItem('hifdzul_user');
+            showToast('Sesi telah berakhir. Silakan login kembali.', 'warning');
+            changeScreen('screen-welcome');
+          } else {
+            // Session masih valid, mulai pengecekan berkala
+            var greetEl = document.getElementById('user-greeting');
+            if (greetEl) greetEl.innerText = "Assalamu'alaikum, " + curUser.nama.split(' ')[0];
+
+            updateUIByRole();
+            changeScreen('screen-app'); 
+            loadHistory();
+            loadNotifications();
+            
+            // Mulai session checker & activity tracker
+            startSessionChecker_();
+            setupActivityTracker_();
+          }
+        } else {
+           changeScreen('screen-welcome'); 
+        }
+      } catch (e) {
+        localStorage.removeItem('hifdzul_user');
+        changeScreen('screen-welcome'); 
+      }
+    } else {
+      changeScreen('screen-welcome'); 
+    }
+  };
+
+  // --- UI PERMISSIONS ---
+  // --- UI PERMISSIONS (Updated) ---
+  function updateUIByRole() {
+    if (!curUser) return;
+
+    var navSantri = document.getElementById('nav-item-santri');
+    var navPlus = document.getElementById('nav-item-plus');
+    var fab = document.getElementById('fab-add-santri');
+    var navHafalan = document.getElementById('nav-item-hafalan');
+    var navGuru = document.getElementById('nav-item-guru');
+    var navKalender = document.getElementById('nav-item-kalender');
+    var navJadwal = document.getElementById('nav-item-jadwal');
+
+    if (curUser.role === 'Santri') {
+      if (navSantri) navSantri.classList.add('d-none');
+      if (navPlus) navPlus.classList.add('d-none');
+      if (fab) fab.classList.add('d-none');
+      if (navHafalan) navHafalan.classList.remove('d-none');
+      if (navGuru) navGuru.classList.add('d-none');
+      if (navKalender) navKalender.classList.add('d-none');
+      if (navJadwal) navJadwal.classList.remove('d-none');
+    } else if (curUser.role === 'Admin') {
+      if (navSantri) navSantri.classList.remove('d-none');
+      if (navPlus) navPlus.classList.add('d-none');
+      if (fab) fab.classList.remove('d-none');
+      if (navHafalan) navHafalan.classList.add('d-none');
+      if (navGuru) navGuru.classList.remove('d-none');
+      if (navKalender) navKalender.classList.add('d-none');
+      if (navJadwal) navJadwal.classList.remove('d-none');
+    } else {
+      // Guru / Ust - bisa input setoran
+      if (navSantri) navSantri.classList.remove('d-none');
+      if (navPlus) navPlus.classList.remove('d-none');
+      if (fab) fab.classList.add('d-none');
+      if (navHafalan) navHafalan.classList.add('d-none');
+      if (navGuru) navGuru.classList.add('d-none');
+      if (navKalender) navKalender.classList.add('d-none');
+      if (navJadwal) navJadwal.classList.remove('d-none');
+    }
+
+    // Update Dashboard Stats
+    google.script.run.withSuccessHandler(function(stats) {
+        if (!stats) return;
+        
+        // Update Kartu Hijau (Cockpit)
+        var elMainNum = document.getElementById('banner-main-number');
+        var elMainUnit = document.getElementById('banner-main-unit');
+        var elSecNum = document.getElementById('banner-sec-number');
+        var elSecUnit = document.getElementById('banner-sec-unit');
+        var elPercent = document.getElementById('banner-percent-badge');
+        var elBar = document.getElementById('banner-custom-bar');
+        var elLegend = document.getElementById('legend-left');
+        
+        if (stats.role === 'Santri') {
+            // Santri: Tampilkan Total Ayat Ziyadah & Juz
+            if (elMainNum) elMainNum.innerText = stats.ziyadahCount || 0;
+            if (elMainUnit) elMainUnit.innerText = "Ayat";
+            if (elSecNum) elSecNum.innerText = stats.juzCount || 0;
+            if (elSecUnit) elSecUnit.innerText = "Juz";
+            if (elPercent) elPercent.innerText = Math.round(stats.percent || 0) + "%";
+            if (elBar) elBar.style.width = Math.min(stats.percent || 0, 100) + "%";
+            if (elLegend) elLegend.innerText = "Total Hafalan";
+        } else {
+            // Admin: Tampilkan Ayat Hari Ini & Santri Aktif
+            if (elMainNum) elMainNum.innerText = stats.mainNum || 0;
+            if (elMainUnit) elMainUnit.innerText = stats.mainUnit || "Ayat";
+            if (elSecNum) elSecNum.innerText = stats.setorCount || 0;
+            if (elSecUnit) elSecUnit.innerText = "Santri";
+            if (elPercent) elPercent.innerText = (stats.percent || 0) + "%";
+            if (elBar) elBar.style.width = (stats.percent || 0) + "%";
+            if (elLegend) elLegend.innerText = "Setor Hari Ini";
+        }
+        
+        // Update Kartu Rangkuman
+        var elJuz = document.getElementById('txt-juz-count');
+        var elZiyadah = document.getElementById('txt-ziyadah-count');
+        var elMurajaah = document.getElementById('txt-murajaah-count');
+        var barJuz = document.getElementById('bar-juz');
+        var barZiyadah = document.getElementById('bar-ziyadah');
+        var barMurajaah = document.getElementById('bar-murajaah');
+        
+        if (stats.role === 'Santri') {
+            if (elJuz) elJuz.innerText = (stats.juzCount || 0) + "/30";
+            if (elZiyadah) elZiyadah.innerText = (stats.ziyadahCount || 0) + "/6236";
+            if (elMurajaah) elMurajaah.innerText = (stats.murajaahCount || 0) + "/6236";
+            if (barJuz) barJuz.style.width = Math.round((stats.juzCount || 0) / 30 * 100) + "%";
+            if (barZiyadah) barZiyadah.style.width = Math.min(Math.round((stats.ziyadahCount || 0) / 6236 * 100), 100) + "%";
+            if (barMurajaah) barMurajaah.style.width = Math.min(Math.round((stats.murajaahCount || 0) / 6236 * 100), 100) + "%";
+        } else {
+            if (elJuz) elJuz.innerText = "30/30";
+            if (elZiyadah) elZiyadah.innerText = (stats.ziyadahCount || 0) + "/6236";
+            if (elMurajaah) elMurajaah.innerText = (stats.murajaahCount || 0) + "/6236";
+            if (barJuz) barJuz.style.width = "100%";
+            if (barZiyadah) barZiyadah.style.width = "100%";
+            if (barMurajaah) barMurajaah.style.width = "100%";
+        }
+        
+        // Update Date String
+        var elDate = document.getElementById('prayer-date-info');
+        if (elDate && stats.dateStr) elDate.innerText = stats.dateStr;
+    }).getDashboardStats(curUser.role, curUser.id);
+  }
+
+  // --- NOTIFIKASI ---
+  function openNotifDrawer() {
+    document.querySelector('.drawer-backdrop').classList.add('show');
+    document.getElementById('notif-drawer').classList.add('open');
+    loadNotifications();
+  }
+
+  function closeNotifDrawer() {
+    document.querySelector('.drawer-backdrop').classList.remove('show');
+    document.getElementById('notif-drawer').classList.remove('open');
+  }
+
+  function loadNotifications() {
+    if (!curUser) return;
+    google.script.run.withSuccessHandler(function(data) {
+      var html = '', hasUnread = false;
+      if (!data || data.length === 0) {
+        html = '<div class="text-center mt-5 text-muted small"><i class="far fa-bell-slash mb-2 fa-2x opacity-50"></i><br>Tidak ada notifikasi</div>';
+      } else {
+        data.forEach(function(n) {
+          if (!n.read) hasUnread = true;
+          var bgClass = n.type === 'Ziyadah' ? 'bg-red-soft' : (n.type === 'Murajaah' ? 'bg-green-soft' : 'bg-light text-primary');
+          var icon = n.type === 'Ziyadah' ? 'fa-book' : (n.type === 'Murajaah' ? 'fa-microphone' : 'fa-info');
+          
+          html += '<div class="notif-item ' + (n.read ? '' : 'unread') + '"><div class="notif-icon ' + bgClass + '"><i class="fas ' + icon + '"></i></div><div class="notif-content"><h6>' + escapeHtml(n.title) + '</h6><p>' + escapeHtml(n.msg) + '</p><div class="notif-time">' + escapeHtml(n.time) + '</div></div></div>';
+        });
+      }
+      document.getElementById('notif-list').innerHTML = html;
+      var badge = document.getElementById('notif-badge');
+      if (hasUnread) badge.classList.remove('d-none');
+      else badge.classList.add('d-none');
+    }).getNotifications(curUser.id);
+  }
+
+  function markRead() {
+    if (!curUser) return;
+    
+    var badge = document.getElementById('notif-badge');
+    if (badge) { badge.classList.add('d-none'); badge.innerHTML = ''; }
+    
+    document.querySelectorAll('.notif-item.unread').forEach(function(el) {
+      el.classList.remove('unread');
+    });
+
+    google.script.run.withSuccessHandler(function() {
+      loadNotifications();
+      showToast('Semua ditandai sudah dibaca');
+    }).markAllRead(curUser.id);
+  }
+
+  function deleteAllNotif() {
+      var list = document.getElementById('notif-list');
+      
+      // Cek apakah list kosong (Hanya teks "Tidak ada notifikasi")
+      if(!list || list.innerText.includes('Tidak ada notifikasi')) {
+          showToast('Tidak ada notifikasi untuk dihapus', 'info');
+          return;
+      }
+
+      openDeleteModal(function() {
+        google.script.run.withSuccessHandler(res => {
+          // Kembalikan tombol modal ke kondisi semula
+          var btnYes = document.getElementById('btn-confirm-yes');
+          if(btnYes) {
+              btnYes.innerText = "Ya, Hapus";
+              btnYes.disabled = false;
+          }
+          closeDeleteModal();
+
+          if(res.status === 'success') {
+              // 1. Tampilkan pesan dari server (Misal: "Berhasil hapus 5 data lama")
+              var msg = res.message || 'Notifikasi berhasil dibersihkan';
+              showToast(msg, 'info');
+              
+              // 2. JANGAN PAKSA KOSONGKAN LIST
+              // Karena untuk Admin, mungkin masih ada notif baru yg tersisa.
+              // Jadi kita reload data yang sebenarnya.
+              loadNotifications(); 
+              
+          } else {
+              showToast('Terjadi kesalahan server', 'error');
+              loadNotifications(); 
+          }
+        }).deleteAllNotifications(curUser.id);
+      });
+  }
+
+  // --- HISTORY & CRUD UTAMA ---
+  function loadHistory() {
+    if (!curUser) return;
+    google.script.run.withSuccessHandler(function(data) {
+      var list = document.getElementById('history-list');
+      if (!list) return;
+      var html = '';
+      if (!data || data.length == 0) {
+        html = '<div class="text-center py-4"><div style="width:50px; height:50px; background:linear-gradient(135deg, #F1F5F9, #E2E8F0); border-radius:16px; display:flex; align-items:center; justify-content:center; margin:0 auto 10px auto;"><i class="fas fa-inbox text-muted" style="font-size:20px; opacity:0.5;"></i></div><p class="text-muted small mb-0">Belum ada aktivitas</p></div>';
+      } else {
+        data.forEach(function(item) {
+          var dataStr = JSON.stringify(item).replace(/"/g, '&quot;');
+          var isAuth = (curUser.role !== 'Santri');
+          var clickAction = isAuth ? 'onclick="openSetoranAction(' + dataStr + ')"' : '';
+          var cursorStyle = isAuth ? 'cursor:pointer;' : '';
+
+          // Warna ikon berdasarkan tipe
+          var isZiyadah = item.tipe === 'Ziyadah';
+          var iconBg = isZiyadah ? 'linear-gradient(135deg, #FEE2E2, #FECACA)' : 'linear-gradient(135deg, #D1FAE5, #A7F3D0)';
+          var iconColor = isZiyadah ? '#EF4444' : '#10B981';
+          var icon = isZiyadah ? 'fa-book-open' : 'fa-microphone';
+          var nilaiColor = isZiyadah ? '#EF4444' : '#10B981';
+
+          html += '<div class="item-row" style="' + cursorStyle + ' margin-bottom:10px;" ' + clickAction + '>'
+            + '<div class="d-flex align-items-center flex-grow-1">'
+            + '<div style="width:40px; height:40px; background:' + iconBg + '; border-radius:12px; display:flex; align-items:center; justify-content:center; margin-right:12px; flex-shrink:0;">'
+            + '<i class="fas ' + icon + '" style="font-size:14px; color:' + iconColor + ';"></i>'
+            + '</div>'
+            + '<div>'
+            + '<h6 class="fw-bold mb-0 text-dark" style="font-size:13px;">' + escapeHtml(item.surat) + ' : ' + escapeHtml(item.ayat) + '</h6>'
+            + '<small class="text-muted" style="font-size:10px;">' + escapeHtml(item.nama) + ' &bull; ' + escapeHtml(item.tipe) + '</small>'
+            + '</div>'
+            + '</div>'
+            + '<div class="text-end">'
+            + '<small class="fw-bold d-block" style="font-size:12px; color:' + nilaiColor + ';">' + escapeHtml(item.nilai_info || '') + '</small>'
+            + '<small class="text-muted" style="font-size:9px;">' + escapeHtml(item.tanggal) + '</small>'
+            + '</div>'
+            + '</div>';
+        });
+      }
+      list.innerHTML = html;
+    }).getRiwayatHafalan(curUser.id, curUser.role);
+  }
+
+  // --- UPDATE DI js.html ---
+  function openSetoranAction(data) {
+      tempSetoranData = data;
+      
+      // Masukkan Nama ke ID Title
+      var elTitle = document.getElementById('action-setor-title');
+      if(elTitle) elTitle.innerText = data.nama;
+      
+      // Masukkan Info Surat ke ID Desc
+      var elDesc = document.getElementById('action-setor-desc');
+      if(elDesc) elDesc.innerText = data.tipe + " • " + data.surat + " (" + data.ayat + ")";
+      
+      // Tampilkan Modal
+      document.getElementById('modal-setoran-action').classList.add('show');
+  }
+
+  function closeSetoranAction() {
+    document.getElementById('modal-setoran-action').classList.remove('show');
+  }
+
+  // --- LOGIKA EDIT SETORAN (UPDATED) ---
+
+  function triggerEditSetoran() {
+      closeSetoranAction();
+      changeScreen('screen-edit-setoran');
+      
+      // Isi data ke form
+      document.getElementById('edit-setor-nama').value = tempSetoranData.nama;
+      document.getElementById('edit-setor-tipe').value = tempSetoranData.tipe;
+      document.getElementById('edit-setor-juz').value = tempSetoranData.juz;
+      document.getElementById('edit-setor-start').value = tempSetoranData.ayatStart;
+      document.getElementById('edit-setor-end').value = tempSetoranData.ayatEnd;
+      document.getElementById('edit-setor-nilai').value = tempSetoranData.nilai_info;
+      document.getElementById('edit-setor-catatan').value = tempSetoranData.catatan;
+
+      // Tampilkan dropdown yang sesuai berdasarkan tipe
+      var nilaiBox = document.getElementById('edit-setor-nilai');
+      var tipe = tempSetoranData.tipe;
+      if (tipe === 'Murajaah') {
+        nilaiBox.innerHTML = '<option value="Lanjut">Lancar (Lanjut)</option><option value="Ulang">Belum Lancar (Ulang)</option>';
+        nilaiBox.value = tempSetoranData.nilai_info;
+      } else {
+        nilaiBox.innerHTML = '<option value="Mumtaz">Mumtaz (Sempurna)</option><option value="Jayyid Jiddan">Jayyid Jiddan (Baik Sekali)</option><option value="Jayyid">Jayyid (Baik)</option><option value="Maqbul">Maqbul (Cukup)</option>';
+        nilaiBox.value = tempSetoranData.nilai_info;
+      }
+
+      // Load Daftar Surat dari database lokal (quranDB)
+      var s = document.getElementById('edit-setor-surat');
+      s.innerHTML = '';
+      quranDB.forEach(function(q) {
+        var opt = document.createElement('option');
+        opt.value = q.n;
+        opt.innerHTML = q.n;
+        s.appendChild(opt);
+      });
+      // Set nilai surat setelah semua opsi ditambahkan
+      s.value = tempSetoranData.surat;
+  }
+
+  function closeEditSetoran() {
+      changeScreen('screen-app');
+  }
+
+  function processUpdateSetoran(btn) {
+      var oldBtn = document.querySelector('#screen-edit-setoran .btn-primary-custom');
+      if (!oldBtn) oldBtn = btn;
+      var oldText = oldBtn.innerText;
+      oldBtn.innerText = "Menyimpan...";
+      oldBtn.disabled = true;
+
+      var payload = {
+        oldDate: tempSetoranData.rawDate,
+        nis: tempSetoranData.nis,
+        kategori: tempSetoranData.tipe,
+        surat: document.getElementById('edit-setor-surat').value,
+        juz: document.getElementById('edit-setor-juz').value,
+        ayatMulai: document.getElementById('edit-setor-start').value,
+        ayatSelesai: document.getElementById('edit-setor-end').value,
+        nilai: document.getElementById('edit-setor-nilai').value,
+        catatan: document.getElementById('edit-setor-catatan').value
+      };
+
+      google.script.run.withSuccessHandler(function(res) {
+        oldBtn.innerText = oldText;
+        oldBtn.disabled = false;
+        
+        if (res.status === 'success') {
+          showToast('Setoran berhasil diperbarui');
+          closeEditSetoran();
+          loadHistory(); // Refresh list
+        } else {
+          showToast(res.message, 'error');
+        }
+      }).withFailureHandler(function() {
+        showToast('Gagal menyimpan perubahan', 'error');
+        oldBtn.innerText = oldText;
+        oldBtn.disabled = false;
+      }).updateSetoranData(payload);
+  }
+
+  // --- CUSTOM ALERT HAPUS ---
+  function openDeleteModal(actionCallback) {
+    pendingDeleteAction = actionCallback;
+    document.getElementById('modal-confirm-delete').classList.add('show');
+  }
+
+  function closeDeleteModal() {
+    document.getElementById('modal-confirm-delete').classList.remove('show');
+    pendingDeleteAction = null;
+  }
+
+  function executeDelete() {
+    if (pendingDeleteAction) {
+      var btn = document.getElementById('btn-confirm-yes');
+      var oldText = btn.innerText;
+      btn.innerText = "Menghapus...";
+      btn.disabled = true;
+
+      // Simpan original text untuk dipulihkan nanti
+      btn.dataset.originalText = oldText;
+      pendingDeleteAction();
+    }
+  }
+
+  function triggerDeleteSantri() {
+    closeSantriAction();
+    openDeleteModal(function() {
+      google.script.run.withSuccessHandler(function(res) {
+        document.getElementById('btn-confirm-yes').innerText = "Ya, Hapus";
+        document.getElementById('btn-confirm-yes').disabled = false;
+        closeDeleteModal();
+
+        if (res.status === 'success') {
+          showToast('Data Santri berhasil dihapus');
+          loadSantri();
+        } else {
+          showToast(res.message, 'error');
+        }
+      }).deleteSantriData(selectedSantriNIS, curUser.id);
+    });
+  }
+
+  function triggerDeleteSetoran() {
+    closeSetoranAction();
+    openDeleteModal(function() {
+      google.script.run.withSuccessHandler(function(res) {
+        document.getElementById('btn-confirm-yes').innerText = "Ya, Hapus";
+        document.getElementById('btn-confirm-yes').disabled = false;
+        closeDeleteModal();
+
+        if (res.status === 'success') {
+          showToast('Setoran berhasil dihapus');
+          loadHistory();
+        } else {
+          showToast(res.message, 'error');
+        }
+      }).deleteSetoranData({
+        date: tempSetoranData.rawDate,
+        nis: tempSetoranData.nis,
+        kategori: tempSetoranData.tipe
+      });
+    });
+  }
+
+  // --- PILIH SANTRI ---
+// --- NAVIGASI KE DETAIL V2 (Updated) ---
+  function selectItem(nis, nama) {
+    var viewSelector = document.getElementById('view-selector');
+    if (viewSelector && viewSelector.classList.contains('layer-visible')) {
+        // Mode Input Setoran: Pilih Santri
+        document.getElementById('txt-selected-santri').innerText = nama;
+        document.getElementById('val-nis').value = nis;
+        closeSantriSelector();
+        google.script.run.withSuccessHandler(function(c) {
+            document.getElementById('txt-total-setoran').innerText = c + " Data";
+        }).getTotalCount(nis);
+    } else {
+        // Mode Daftar Santri: Buka Detail
+        openSantriDetailV2(nis, nama);
+    }
+  }
+
+  // --- LOGIKA DETAIL SANTRI V2 (PETA HAFALAN) ---
+  var currentDetailNIS = null;
+  var currentDetailNama = null;
+  var viewingNIS = null; // NIS santri yang sedang dilihat (untuk admin)
+
+  function openSantriDetailV2(nis, nama) {
+    currentDetailNIS = nis;
+    currentDetailNama = nama;
+    viewingNIS = nis; // Set NIS yang sedang dilihat
+    
+    changeScreen('screen-santri-detail');
+    
+    // Set Info Dasar di Header
+    document.getElementById('detail-nama').innerText = nama;
+    document.getElementById('detail-nis').innerText = "NIS: " + nis;
+    document.getElementById('detail-initial').innerText = nama.charAt(0).toUpperCase();
+    document.getElementById('detail-kelas').innerText = '';
+    
+    // Ambil data detail untuk tampilkan kelas
+    google.script.run.withSuccessHandler(function(detail) {
+      if (detail && detail.kelas) {
+        document.getElementById('detail-kelas').innerText = 'Kelas: ' + detail.kelas;
+      }
+    }).getSantriDetail(nis);
+    
+    // Reset Statistik & Grid ke Kosong dulu (biar gak nampilin data santri sebelumnya)
+    document.getElementById('detail-total-ziyadah').innerText = "...";
+    document.getElementById('detail-total-murajaah').innerText = "...";
+    var grid = document.getElementById('juz-grid-container');
+    grid.innerHTML = ''; 
+    for(var i=1; i<=30; i++) {
+        // Buat kotak Juz 1-30 dengan onclick untuk admin
+        grid.innerHTML += '<div class="juz-box" id="juz-box-' + i + '" onclick="openJuzDetailFromAdmin(' + i + ')" style="cursor:pointer;">' + i + '</div>';
+    }
+
+    // Panggil Server untuk Ambil Data Lengkap
+    google.script.run.withSuccessHandler(function(data) {
+        document.getElementById('detail-total-ziyadah').innerText = data.ziyadahCount;
+        document.getElementById('detail-total-murajaah').innerText = data.murajaahCount;
+        
+        // Warnai Grid Juz yang Aktif (Hijau)
+        data.activeJuz.forEach(function(juz) {
+            var el = document.getElementById('juz-box-' + juz);
+            if(el) el.classList.add('active');
+        });
+        
+    }).getSantriCompleteStats(nis);
+  }
+
+  function closeSantriDetail() {
+    changeScreen('screen-app');
+  }
+
+  function openSantriAction(nis, nama) {
+    selectedSantriNIS = nis;
+    document.getElementById('action-santri-name').innerText = nama;
+    document.getElementById('action-santri-nis').innerText = nis;
+    document.getElementById('btn-delete-santri').classList[curUser.role === 'Admin' ? 'remove' : 'add']('d-none');
+    document.getElementById('modal-santri-action').classList.add('show');
+  }
+
+  function closeSantriAction() {
+    document.getElementById('modal-santri-action').classList.remove('show');
+  }
+
+  function editSantriDirect(nis) {
+    selectedSantriNIS = nis;
+    google.script.run.withSuccessHandler(function(data) {
+      if (data) {
+        changeScreen('screen-edit-santri-data');
+        originalNisForEdit = data.nis;
+        document.getElementById('edit-data-nis').value = data.nis;
+        document.getElementById('edit-data-nama').value = data.nama;
+        document.getElementById('edit-data-kelas').value = data.kelas || '';
+        document.getElementById('edit-data-gender').value = data.gender || 'Laki-laki';
+        document.getElementById('edit-data-tgl').value = data.tgl;
+        document.getElementById('edit-data-wali').value = data.wali;
+        document.getElementById('edit-data-hp').value = data.hp;
+        document.getElementById('edit-data-pass').value = '';
+        var img = document.getElementById('edit-data-foto-preview');
+        var ph = document.getElementById('edit-data-foto-placeholder');
+        if (data.foto) {
+          img.src = data.foto;
+          img.classList.remove('d-none');
+          ph.classList.add('d-none');
+        } else {
+          img.classList.add('d-none');
+          ph.classList.remove('d-none');
+        }
+      } else {
+        showToast('Gagal ambil data', 'error');
+      }
+    }).getSantriDetail(nis);
+  }
+
+  function viewSantriDetail(nis) {
+    google.script.run.withSuccessHandler(function(data) {
+      if (data) {
+        changeScreen('screen-detail-siswa');
+        // Foto
+        var img = document.getElementById('detail-siswa-foto');
+        var ph = document.getElementById('detail-siswa-initial');
+        if (data.foto) {
+          img.src = data.foto;
+          img.classList.remove('d-none');
+          ph.classList.add('d-none');
+        } else {
+          img.classList.add('d-none');
+          ph.classList.remove('d-none');
+          ph.innerText = data.nama.charAt(0).toUpperCase();
+        }
+        document.getElementById('detail-siswa-nama').innerText = data.nama;
+        document.getElementById('detail-siswa-nis').innerText = 'NIS: ' + data.nis;
+        document.getElementById('detail-siswa-kelas').innerText = data.kelas || '-';
+        document.getElementById('detail-siswa-gender').innerText = data.gender || '-';
+        document.getElementById('detail-siswa-tgl').innerText = data.tgl || '-';
+        document.getElementById('detail-siswa-wali').innerText = data.wali || '-';
+        document.getElementById('detail-siswa-hp').innerText = data.hp || '-';
+      } else {
+        showToast('Gagal ambil data', 'error');
+      }
+    }).getSantriDetail(nis);
+  }
+
+  function closeDetailSiswa() {
+    changeScreen('screen-app');
+  }
+
+  function triggerEditSantri(btn) {
+    var targetBtn = document.querySelector('#modal-santri-action .btn-primary') || btn;
+    targetBtn.innerText = "Memuat...";
+    google.script.run.withSuccessHandler(function(data) {
+      targetBtn.innerText = "Edit Data";
+      if (data) {
+        closeSantriAction();
+        changeScreen('screen-edit-santri-data');
+        originalNisForEdit = data.nis;
+        document.getElementById('edit-data-nis').value = data.nis;
+        document.getElementById('edit-data-nama').value = data.nama;
+        document.getElementById('edit-data-kelas').value = data.kelas || '';
+        document.getElementById('edit-data-gender').value = data.gender || 'Laki-laki';
+        document.getElementById('edit-data-tgl').value = data.tgl;
+        document.getElementById('edit-data-wali').value = data.wali;
+        document.getElementById('edit-data-hp').value = data.hp;
+        document.getElementById('edit-data-pass').value = '';
+        var img = document.getElementById('edit-data-foto-preview');
+        var ph = document.getElementById('edit-data-foto-placeholder');
+        if (data.foto) {
+          img.src = data.foto;
+          img.classList.remove('d-none');
+          ph.classList.add('d-none');
+        } else {
+          img.classList.add('d-none');
+          ph.classList.remove('d-none');
+        }
+      } else {
+        showToast('Gagal ambil data', 'error');
+      }
+    }).getSantriDetail(selectedSantriNIS);
+  }
+
+  function closeEditSantriData() {
+    changeScreen('screen-app');
+  }
+
+  function previewEditDataFoto(input) {
+    if (input.files && input.files[0]) {
+      compressImage(input.files[0], 200, 0.5, function(compressed) {
+        var img = document.getElementById('edit-data-foto-preview');
+        img.src = compressed;
+        img.classList.remove('d-none');
+        document.getElementById('edit-data-foto-placeholder').classList.add('d-none');
+        input.dataset.compressed = compressed;
+      });
+    }
+  }
+
+  function processUpdateSantri(btn) {
+    if (!originalNisForEdit) { showToast('Error: tidak ada data yang diedit', 'error'); return; }
+    var targetBtn = document.querySelector('#screen-edit-santri-data .btn-primary') || btn;
+    targetBtn.innerText = "Menyimpan...";
+    targetBtn.disabled = true;
+    var fileInput = document.getElementById('edit-data-foto');
+    var send = function(foto) {
+      var pl = {
+        oldNis: originalNisForEdit,
+        newNis: document.getElementById('edit-data-nis').value,
+        nama: document.getElementById('edit-data-nama').value,
+        gender: document.getElementById('edit-data-gender').value,
+        tgl: document.getElementById('edit-data-tgl').value,
+        wali: document.getElementById('edit-data-wali').value,
+        hp: document.getElementById('edit-data-hp').value,
+        password: document.getElementById('edit-data-pass').value,
+        foto: foto,
+        kelas: document.getElementById('edit-data-kelas').value,
+        userId: curUser.id
+      };
+      google.script.run.withSuccessHandler(function(res) {
+        targetBtn.innerText = "Simpan Perubahan";
+        targetBtn.disabled = false;
+        if (res.status === 'success') {
+          showToast('Data Diperbarui');
+          closeEditSantriData();
+          loadSantri();
+        } else {
+          showToast(res.message, 'error');
+        }
+      }).updateSantriData(pl);
+    };
+    if (fileInput.files.length > 0 && fileInput.dataset.compressed) {
+      send(fileInput.dataset.compressed);
+    } else {
+      send("");
+    }
+  }
+
+  // --- NAVIGASI ---
+  function changeScreen(id) {
+    document.querySelectorAll('.full-screen-layer').forEach(function(el) {
+      el.classList.remove('layer-visible');
+    });
+    var target = document.getElementById(id);
+    if(target) target.classList.add('layer-visible');
+  }
+
+  // --- NAVIGASI (Updated) ---
+  function navTo(tab, el) {
+    document.querySelectorAll('.nav-item').forEach(function(n) {
+      n.classList.remove('active');
+    });
+    if (el) el.classList.add('active');
+    
+    ['home', 'santri', 'maraton', 'kalender', 'hafalan', 'juz-detail', 'jadwal', 'guru'].forEach(function(t) {
+      var elTab = document.getElementById('tab-' + t);
+      if(elTab) elTab.classList.add('d-none');
+    });
+    
+    var target = document.getElementById('tab-' + tab);
+    if(target) target.classList.remove('d-none');
+    
+    if (tab === 'santri') loadSantri();
+    if (tab === 'maraton') loadRanking();
+    if (tab === 'kalender') loadCalendar();
+    if (tab === 'jadwal') {
+      loadJadwalData();
+      // Tampilkan tombol tambah untuk admin
+      var btnAdd = document.getElementById('btn-add-jadwal');
+      if (btnAdd) {
+        if (curUser && curUser.role !== 'Santri') btnAdd.classList.remove('d-none');
+        else btnAdd.classList.add('d-none');
+      }
+    }
+    if (tab === 'hafalan') loadMyMapData();
+    if (tab === 'guru') loadGuru();
+  }
+
+  // FUNGSI LOAD DATA PETA (KHUSUS SANTRI)
+  function loadMyMapData() {
+      // Reset Grid
+      var grid = document.getElementById('my-juz-grid');
+      grid.innerHTML = '';
+      for(var i=1; i<=30; i++) {
+          grid.innerHTML += '<div class="juz-box" id="tab-juz-' + i + '" onclick="openJuzDetail(' + i + ')" style="cursor:pointer;">' + i + '</div>';
+      }
+      
+      // Ambil Data
+      google.script.run.withSuccessHandler(function(data) {
+          document.getElementById('my-total-ziyadah').innerText = data.ziyadahCount;
+          document.getElementById('my-total-murajaah').innerText = data.murajaahCount;
+          
+          data.activeJuz.forEach(function(juz) {
+              var el = document.getElementById('tab-juz-' + juz);
+              if(el) el.classList.add('active');
+          });
+      }).getSantriCompleteStats(curUser.id);
+  }
+
+  function loadSantri() {
+    google.script.run.withSuccessHandler(function(d) {
+      santriDB = d;
+      renderList('list-santri', d);
+    }).getListSantri();
+    
+    // Load filter kelas chips
+    loadKelasList();
+  }
+  
+  var santriKelasFilter = '';
+  
+  function loadKelasList() {
+    google.script.run.withSuccessHandler(function(kelasList) {
+      var panel = document.getElementById('santri-filter-panel');
+      if (!panel) return;
+      var html = '<div class="d-flex flex-wrap gap-2 align-items-center">';
+      html += '<button class="btn btn-sm rounded-pill fw-bold santri-kelas-btn active" data-kelas="" onclick="setSantriKelasFilter(\'\', this)">Semua</button>';
+      kelasList.forEach(function(k) {
+        var safeK = escapeHtml(k);
+        html += '<button class="btn btn-sm rounded-pill fw-bold santri-kelas-btn" data-kelas="' + safeK + '" onclick="setSantriKelasFilter(\'' + safeK.replace(/'/g, "\\'") + '\', this)" style="background:#F1F5F9;color:#64748B;border:1px solid #E2E8F0;">' + safeK + '</button>';
+      });
+      html += '<div id="santri-bulk-actions" class="d-none ms-auto">';
+      html += '<button class="btn btn-sm rounded-pill fw-bold" style="background:#FEE2E2; color:#DC2626; border:1px solid #FECACA;" onclick="openBulkDeleteModal()"><i class="fas fa-trash-alt me-1"></i> Hapus <span id="bulk-delete-count">0</span></button>';
+      html += '<button class="btn btn-sm rounded-pill fw-bold ms-1" style="background:#F1F5F9; color:#64748B; border:1px solid #E2E8F0;" onclick="clearBulkSelect()"><i class="fas fa-times"></i></button>';
+      html += '</div></div>';
+      panel.innerHTML = html;
+    }).getKelasList();
+  }
+  
+  function toggleSantriFilter() {
+    var panel = document.getElementById('santri-filter-panel');
+    panel.classList.toggle('d-none');
+  }
+  
+  function setSantriKelasFilter(kelas, btn) {
+    santriKelasFilter = kelas;
+    
+    // Update active state
+    document.querySelectorAll('.santri-kelas-btn').forEach(function(b) {
+      b.classList.remove('active');
+      b.style.background = '#F1F5F9';
+      b.style.color = '#64748B';
+    });
+    btn.classList.add('active');
+    btn.style.background = 'var(--primary)';
+    btn.style.color = 'white';
+    
+    // Update badge
+    var badge = document.getElementById('santri-filter-badge');
+    if (kelas) {
+      badge.classList.remove('d-none');
+    } else {
+      badge.classList.add('d-none');
+    }
+    
+    filterList('santri');
+  }
+
+  var selectedSantriForBulk = [];
+
+  function toggleBulkSelect(nis, el) {
+    var idx = selectedSantriForBulk.indexOf(nis);
+    if (idx > -1) {
+      selectedSantriForBulk.splice(idx, 1);
+      el.closest('.item-row').classList.remove('border-primary');
+    } else {
+      selectedSantriForBulk.push(nis);
+      el.closest('.item-row').classList.add('border-primary');
+    }
+    updateBulkDeleteBtn();
+  }
+
+  function updateBulkDeleteBtn() {
+    var bulkActions = document.getElementById('santri-bulk-actions');
+    var count = document.getElementById('bulk-delete-count');
+    var filterPanel = document.getElementById('santri-filter-panel');
+
+    if (selectedSantriForBulk.length > 0) {
+      // Tampilkan panel filter jika belum terbuka
+      if (filterPanel && filterPanel.classList.contains('d-none')) {
+        filterPanel.classList.remove('d-none');
+      }
+      if (bulkActions) bulkActions.classList.remove('d-none');
+      if (count) count.innerText = selectedSantriForBulk.length;
+    } else {
+      if (bulkActions) bulkActions.classList.add('d-none');
+    }
+  }
+
+  function clearBulkSelect() {
+    selectedSantriForBulk = [];
+    updateBulkDeleteBtn();
+    document.querySelectorAll('#list-santri .item-row').forEach(function(el) {
+      el.classList.remove('border-primary');
+    });
+    document.querySelectorAll('#list-santri .bulk-checkbox').forEach(function(cb) {
+      cb.checked = false;
+    });
+  }
+
+  function openBulkDeleteModal() {
+    if (selectedSantriForBulk.length === 0) return;
+    document.getElementById('bulk-delete-count-display').innerText = selectedSantriForBulk.length;
+    document.getElementById('modal-bulk-delete').classList.add('show');
+  }
+
+  function closeBulkDeleteModal() {
+    document.getElementById('modal-bulk-delete').classList.remove('show');
+  }
+
+  function executeBulkDelete() {
+    var btn = document.getElementById('btn-confirm-bulk-yes');
+    btn.innerText = 'Menghapus...';
+    btn.disabled = true;
+
+    google.script.run.withSuccessHandler(function(res) {
+      btn.innerText = 'Ya, Hapus';
+      btn.disabled = false;
+      closeBulkDeleteModal();
+
+      if (res.status === 'success') {
+        showToast(res.success + ' santri berhasil dihapus');
+        clearBulkSelect();
+        loadSantri();
+      } else {
+        showToast(res.message, 'error');
+      }
+    }).withFailureHandler(function() {
+      showToast('Gagal menghapus data', 'error');
+      btn.innerText = 'Ya, Hapus';
+      btn.disabled = false;
+    }).bulkDeleteSantri(selectedSantriForBulk, curUser.id);
+  }
+
+  function renderList(target, data) {
+    var html = '';
+    if (!data) return;
+    var isAdminList = (target === 'list-santri');
+    var canEdit = isAdminList && curUser && curUser.role === 'Admin';
+    data.forEach(function(s) {
+      var safeNis = escAttr(s.nis);
+      var safeNama = escAttr(s.nama);
+      if (isAdminList) {
+        var isChecked = selectedSantriForBulk.indexOf(s.nis) > -1;
+        html += '<div class="item-row" style="cursor:pointer;' + (isChecked ? 'border:1px solid var(--primary);' : '') + '" onclick="selectItem(\'' + safeNis + '\',\'' + safeNama + '\')">'
+          + '<div class="d-flex align-items-center flex-grow-1">'
+          + (canEdit ? '<input type="checkbox" class="form-check-input bulk-checkbox me-2" ' + (isChecked ? 'checked' : '') + ' onclick="event.stopPropagation(); toggleBulkSelect(\'' + safeNis + '\', this)" style="width:18px;height:18px;cursor:pointer;">' : '')
+          + '<div class="avatar-circle">' + escapeHtml(s.nama.charAt(0)) + '</div>'
+          + '<div><h6 class="fw-bold mb-0 text-dark">' + escapeHtml(s.nama) + '</h6><small class="text-muted">' + escapeHtml(s.nis) + '</small></div>'
+          + '</div>'
+          + '<div class="d-flex align-items-center gap-2">'
+          + '<i class="fas fa-eye text-info" style="cursor:pointer;font-size:13px;" onclick="event.stopPropagation(); viewSantriDetail(\'' + safeNis + '\')"></i>'
+          + (canEdit ? '<i class="fas fa-pen text-primary" style="cursor:pointer;font-size:13px;" onclick="event.stopPropagation(); editSantriDirect(\'' + safeNis + '\')"></i>' : '')
+          + '</div></div>';
+      } else {
+        html += '<div class="item-row" onclick="selectItem(\'' + safeNis + '\',\'' + safeNama + '\')"><div class="d-flex align-items-center"><div class="avatar-circle">' + escapeHtml(s.nama.charAt(0)) + '</div><div><h6 class="fw-bold mb-0 text-dark">' + escapeHtml(s.nama) + '</h6><small class="text-muted">' + escapeHtml(s.nis) + '</small></div></div></div>';
+      }
+    });
+    document.getElementById(target).innerHTML = html;
+  }
+
+  function filterList(type) {
+    if (type !== 'santri') {
+      // Selector (pilih santri untuk input setoran) - tidak ada filter kelas
+      var k = document.getElementById('search-selector').value.toLowerCase();
+      renderList('list-selector', santriDB.filter(function(s) {
+        return s.nama.toLowerCase().includes(k) || String(s.nis).includes(k);
+      }));
+      return;
+    }
+    
+    // Filter untuk tab santri (admin)
+    var searchKey = document.getElementById('searchSantri').value.toLowerCase();
+    
+    var filtered = santriDB.filter(function(s) {
+      var matchSearch = s.nama.toLowerCase().includes(searchKey) || String(s.nis).includes(searchKey);
+      var matchKelas = !santriKelasFilter || s.kelas === santriKelasFilter;
+      return matchSearch && matchKelas;
+    });
+    renderList('list-santri', filtered);
+  }
+
+  // --- ADD SANTRI ---
+  function openAddSantri() {
+    changeScreen('screen-add-santri');
+  }
+
+  function closeAddSantri() {
+    changeScreen('screen-app');
+  }
+
+  function previewNewFoto(input) {
+    if (input.files && input.files[0]) {
+      compressImage(input.files[0], 200, 0.5, function(compressed) {
+        var img = document.getElementById('new-foto-preview');
+        img.src = compressed;
+        img.classList.remove('d-none');
+        document.getElementById('new-foto-placeholder').classList.add('d-none');
+        // Simpan base64 terkompresi untuk dikirim nanti
+        input.dataset.compressed = compressed;
+      });
+    }
+  }
+
+  function saveNewSantri(btn) {
+    var nis = document.getElementById('new-nis').value;
+    var nama = document.getElementById('new-nama').value;
+    if (!nis || !nama) {
+      showToast("Data wajib diisi", "error");
+      return;
+    }
+    var targetBtn = document.querySelector('#screen-add-santri .btn-primary') || btn;
+    var old = targetBtn.innerText;
+    targetBtn.innerText = "Menyimpan...";
+    targetBtn.disabled = true;
+    var f = document.getElementById('new-foto');
+    var send = function(foto) {
+      var pl = {
+        nis: nis,
+        nama: nama,
+        tgl: document.getElementById('new-tgl').value,
+        gender: document.getElementById('new-gender').value,
+        wali: document.getElementById('new-wali').value,
+        hp: document.getElementById('new-hp').value,
+        foto: foto,
+        kelas: document.getElementById('new-kelas').value,
+        userId: curUser.id
+      };
+      google.script.run.withSuccessHandler(function(res) {
+        targetBtn.innerText = old;
+        targetBtn.disabled = false;
+        if (res.status === 'success') {
+          showToast("Berhasil");
+          closeAddSantri();
+          loadSantri();
+        } else {
+          showToast(res.message, "error");
+        }
+      }).addSantri(pl);
+    };
+    if (f.files.length > 0 && f.dataset.compressed) {
+      send(f.dataset.compressed);
+    } else {
+      send("");
+    }
+  }
+
+  // --- IMPORT SANTRI ---
+  var importData = [];
+
+  function openImportSantri() {
+    changeScreen('screen-import-santri');
+    resetImportFile();
+  }
+
+  function closeImportSantri() {
+    changeScreen('screen-app');
+    loadSantri();
+  }
+
+  function downloadTemplate() {
+    // Buat workbook baru
+    var wb = XLSX.utils.book_new();
+
+    // Data template
+    var data = [
+      ['NIS', 'Nama', 'Jenis_Kelamin', 'Tanggal_Lahir', 'Wali', 'HP', 'Kelas'],
+      ['S001', 'Ahmad Fauzi', 'Laki-laki', '2010-05-15', 'Budi Santoso', '08123456789', 'VII-A'],
+      ['S002', 'Siti Rahayu', 'Perempuan', '2010-08-20', 'Hasan Rahayu', '08123456790', 'VII-A'],
+      ['S003', 'Muhammad Rizki', 'Laki-laki', '2010-03-10', 'Ahmad Rizki', '08123456791', 'VII-B']
+    ];
+
+    // Buat worksheet
+    var ws = XLSX.utils.aoa_to_sheet(data);
+
+    // Atur lebar kolom
+    ws['!cols'] = [
+      { wch: 10 },  // NIS
+      { wch: 25 },  // Nama
+      { wch: 15 },  // Jenis Kelamin
+      { wch: 15 },  // Tanggal Lahir
+      { wch: 20 },  // Wali
+      { wch: 15 },  // HP
+      { wch: 10 }   // Kelas
+    ];
+
+    // Tambah worksheet ke workbook
+    XLSX.utils.book_append_sheet(wb, ws, 'Data Santri');
+
+    // Download file
+    XLSX.writeFile(wb, 'template_import_santri.xlsx');
+    showToast('Template .xlsx didownload');
+  }
+
+  function handleImportFile(input) {
+    var file = input.files[0];
+    if (!file) return;
+
+    // Validasi ukuran (maks 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('Ukuran file maksimal 5MB', 'error');
+      input.value = '';
+      return;
+    }
+
+    // Tampilkan info file
+    document.getElementById('import-file-info').classList.remove('d-none');
+    document.getElementById('import-file-name').innerText = file.name;
+
+    // Baca file dengan FileReader
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var data = new Uint8Array(e.target.result);
+      var workbook = XLSX.read(data, { type: 'array' });
+
+      // Ambil sheet pertama
+      var firstSheet = workbook.SheetNames[0];
+      var worksheet = workbook.Sheets[firstSheet];
+
+      // Konversi ke JSON
+      var jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+
+      // Proses dan validasi
+      processImportData(jsonData);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function processImportData(rows) {
+    importData = [];
+    var validCount = 0;
+    var errorCount = 0;
+    var previewHtml = '';
+    var errorHtml = '';
+
+    rows.forEach(function(row, idx) {
+      var nis = String(row['NIS'] || row['nis'] || '').trim();
+      var nama = String(row['Nama'] || row['nama'] || '').trim();
+      var gender = String(row['Jenis_Kelamin'] || row['jenis_kelamin'] || row['JK'] || 'Laki-laki').trim();
+      var tgl = String(row['Tanggal_Lahir'] || row['tanggal_lahir'] || '').trim();
+      var wali = String(row['Wali'] || row['wali'] || '').trim();
+      var hp = String(row['HP'] || row['hp'] || '').trim();
+      var kelas = String(row['Kelas'] || row['kelas'] || '').trim();
+
+      var errors = [];
+      if (!nis) errors.push('NIS kosong');
+      if (!nama) errors.push('Nama kosong');
+      if (!kelas) errors.push('Kelas kosong');
+
+      var rowHtml = '<div class="d-flex align-items-center py-2 border-bottom" style="font-size:11px;">';
+      rowHtml += '<div style="width:25px; color:#94A3B8;">' + (idx + 1) + '</div>';
+      rowHtml += '<div style="flex:1;">';
+      rowHtml += '<span class="fw-bold text-dark">' + escapeHtml(nama || '-') + '</span>';
+      rowHtml += ' <small class="text-muted">(' + escapeHtml(nis || '-') + ')</small>';
+      rowHtml += ' <small class="text-muted">' + escapeHtml(kelas || '-') + '</small>';
+      rowHtml += '</div>';
+
+      if (errors.length > 0) {
+        errorCount++;
+        rowHtml += '<span class="badge bg-danger" style="font-size:8px;">' + errors.join(', ') + '</span>';
+        errorHtml += '<div class="text-danger small py-1" style="font-size:10px;">Baris ' + (idx + 1) + ': ' + errors.join(', ') + '</div>';
+      } else {
+        validCount++;
+        rowHtml += '<i class="fas fa-check-circle text-success"></i>';
+        importData.push({ nis: nis, nama: nama, gender: gender, tgl: tgl, wali: wali, hp: hp, kelas: kelas });
+      }
+
+      rowHtml += '</div>';
+      previewHtml += rowHtml;
+    });
+
+    // Update UI
+    document.getElementById('import-count-valid').innerText = validCount;
+    document.getElementById('import-count-error').innerText = errorCount;
+    document.getElementById('import-preview-list').innerHTML = previewHtml;
+    document.getElementById('import-preview-section').classList.remove('d-none');
+
+    if (errorCount > 0) {
+      document.getElementById('import-error-list').classList.remove('d-none');
+      document.getElementById('import-error-list').innerHTML = errorHtml;
+    } else {
+      document.getElementById('import-error-list').classList.add('d-none');
+    }
+
+    if (validCount > 0) {
+      document.getElementById('import-action-section').classList.remove('d-none');
+    } else {
+      document.getElementById('import-action-section').classList.add('d-none');
+    }
+  }
+
+  function resetImportFile() {
+    importData = [];
+    document.getElementById('import-file').value = '';
+    document.getElementById('import-file-info').classList.add('d-none');
+    document.getElementById('import-preview-section').classList.add('d-none');
+    document.getElementById('import-action-section').classList.add('d-none');
+    document.getElementById('import-result-section').classList.add('d-none');
+    document.getElementById('import-error-list').classList.add('d-none');
+  }
+
+  function processImportSantri(btn) {
+    if (importData.length === 0) {
+      showToast('Tidak ada data valid untuk diimport', 'error');
+      return;
+    }
+
+    var oldText = btn.innerText;
+    btn.innerText = 'Mengimport...';
+    btn.disabled = true;
+
+    google.script.run.withSuccessHandler(function(res) {
+      btn.innerText = oldText;
+      btn.disabled = false;
+
+      if (res.status === 'success') {
+        var desc = res.success + ' santri berhasil ditambahkan';
+        if (res.failed > 0) {
+          desc += '\n' + res.failed + ' gagal:';
+          res.failedList.forEach(function(f) {
+            desc += '\n- Baris ' + f.baris + ': ' + f.nis + ' (' + f.alasan + ')';
+          });
+        }
+        document.getElementById('import-result-title').innerText = 'Import Selesai!';
+        document.getElementById('import-result-desc').innerText = desc;
+        document.getElementById('import-preview-section').classList.add('d-none');
+        document.getElementById('import-action-section').classList.add('d-none');
+        document.getElementById('import-result-section').classList.remove('d-none');
+      } else {
+        showToast(res.message, 'error');
+      }
+    }).withFailureHandler(function() {
+      showToast('Gagal mengimport data', 'error');
+      btn.innerText = oldText;
+      btn.disabled = false;
+    }).bulkAddSantri(importData, curUser.id);
+  }
+
+  // --- LOGIN & LOGOUT ---
+  function openLogoutModal() {
+    document.getElementById('logout-modal').classList.add('show');
+  }
+
+  function closeLogoutModal() {
+    document.getElementById('logout-modal').classList.remove('show');
+  }
+
+  function processLogout() {
+    closeLogoutModal();
+    
+    // Clear all intervals
+    if (sessionCheckInterval) {
+      clearInterval(sessionCheckInterval);
+      sessionCheckInterval = null;
+    }
+    if (prayerCountdownInterval) {
+      clearInterval(prayerCountdownInterval);
+      prayerCountdownInterval = null;
+    }
+    if (bigClockInterval) {
+      clearInterval(bigClockInterval);
+      bigClockInterval = null;
+    }
+    
+    curUser = null;
+    localStorage.removeItem('hifdzul_user');
+    document.getElementById('username').value = '';
+    document.getElementById('password').value = '';
+    changeScreen('screen-welcome');
+    showToast('Berhasil keluar', 'info');
+  }
+
+  function doLogin() {
+    var u = document.getElementById('username').value;
+    var p = document.getElementById('password').value;
+    var btn = document.getElementById('btnLogin');
+    btn.innerHTML = 'Memuat...';
+    btn.disabled = true;
+    google.script.run.withSuccessHandler(function(res) {
+      if (res.status === 'success') {
+        curUser = res;
+        // Pastikan loginTime ada (backward compatibility)
+        if (!curUser.loginTime) {
+          curUser.loginTime = Date.now();
+        }
+        localStorage.setItem('hifdzul_user', JSON.stringify(res));
+        document.getElementById('user-greeting').innerText = "Assalamu'alaikum, " + res.nama.split(' ')[0];
+        updateUIByRole();
+        changeScreen('screen-app');
+        loadHistory();
+        loadNotifications();
+        
+        // Mulai session checker & activity tracker
+        startSessionChecker_();
+        setupActivityTracker_();
+      } else {
+        showToast(res.message, 'error');
+        btn.innerHTML = 'Masuk Aplikasi';
+        btn.disabled = false;
+      }
+    }).withFailureHandler(function() {
+      showToast('Gagal menghubungi server', 'error');
+      btn.innerHTML = 'Masuk Aplikasi';
+      btn.disabled = false;
+    }).loginUser(u, p);
+  }
+
+  // --- INPUT SETORAN ---
+  // --- INPUT SETORAN CERDAS ---
+  function openInputView() {
+      changeScreen('view-input');
+      
+      // Load Santri jika belum ada
+      if (santriDB.length === 0) {
+          google.script.run.withSuccessHandler(function(d) { santriDB = d; }).getListSantri();
+      }
+
+      // 1. ISI DROPDOWN SURAT DARI DATABASE LOKAL (QURAN DB)
+      var s = document.getElementById('val-surat');
+      if (s.options.length <= 1) { // Hanya isi jika kosong
+          s.innerHTML = '<option value="">Pilih Surat</option>';
+          quranDB.forEach(function(q) {
+              var opt = document.createElement('option');
+              opt.value = q.n;
+              opt.innerText = q.n; // Tampilkan Nama Surat
+              s.appendChild(opt);
+          });
+      }
+
+      // 2. PASANG PENDENGAR OTOMATIS (AUTO JUZ & MAX AYAT)
+      s.onchange = function() {
+          var selectedName = this.value;
+          var qData = quranDB.find(x => x.n === selectedName);
+          
+          if (qData) {
+              // A. Otomatis Pilih Juz
+              document.getElementById('val-juz').value = qData.j;
+              
+              // B. Beri Petunjuk Max Ayat di Placeholder
+              document.getElementById('val-ayat-end').placeholder = "Max: " + qData.c;
+              
+              // C. Reset Input Ayat biar bersih
+              document.getElementById('val-ayat-start').value = "";
+              document.getElementById('val-ayat-end').value = "";
+          }
+      };
+  }
+
+  function closeInputView() {
+    changeScreen('screen-app');
+  }
+
+  function openSantriSelector() {
+    changeScreen('view-selector');
+    renderList('list-selector', santriDB);
+  }
+
+  function closeSantriSelector() {
+    changeScreen('view-input');
+  }
+
+  //<!-- UPDATE loadRanking-->
+  function loadRanking() {
+    // Tampilkan loading sederhana
+    document.getElementById('list-leaderboard').innerHTML = '<div class="text-center py-4 text-muted"><i class="fas fa-circle-notch fa-spin"></i> Memuat Peringkat...</div>';
+
+    google.script.run.withSuccessHandler(function(d) {
+      var html = '';
+      if(!d || d.length === 0) {
+         html = '<div class="text-center text-muted py-5 small">Belum ada data hafalan.</div>';
+      } else {
+        d.forEach(function(x, i) {
+          // Tentukan Ikon & Style Juara
+          var iconLeft = '';
+          var rowStyle = ''; 
+          var rankNum = i + 1;
+
+          if(i === 0) {
+              // JUARA 1 (Emas)
+              iconLeft = '<i class="fas fa-trophy text-warning fa-lg"></i>'; 
+              rowStyle = 'style="background: #FEF9C3; border: 1px solid #FDE047;"'; 
+          } else if(i === 1) {
+              // JUARA 2 (Perak - Abu Metallic)
+              iconLeft = '<i class="fas fa-trophy fa-lg" style="color:#94A3B8"></i>'; 
+              rowStyle = 'style="background: #F8FAFC;"';
+          } else if(i === 2) {
+              // JUARA 3 (Perunggu)
+              iconLeft = '<i class="fas fa-trophy fa-lg" style="color:#CD7F32"></i>'; 
+          } else {
+              // Peringkat 4 dst
+              iconLeft = '<strong class="text-muted" style="width:20px; text-align:center; display:inline-block;">' + rankNum + '</strong>';
+          }
+
+          html += `
+          <div class="item-row" ${rowStyle}>
+              <div class="d-flex align-items-center">
+                  <div class="me-3 d-flex align-items-center justify-content-center" style="width:30px;">
+                    ${iconLeft}
+                  </div>
+                  <div>
+                      <h6 class="fw-bold mb-0 text-dark">${escapeHtml(x.nama)}</h6>
+                      <small class="text-muted" style="font-size:10px">Total Hafalan</small>
+                  </div>
+              </div>
+              <div class="text-end">
+                  <strong class="text-primary fs-6">${escapeHtml(String(x.total))}</strong>
+                  <small class="d-block text-muted" style="font-size:9px">Ayat</small>
+              </div>
+          </div>`;
+        });
+      }
+      document.getElementById('list-leaderboard').innerHTML = html;
+    }).getLeaderboard();
+  }
+
+  function setTipe(t) {
+    document.getElementById('val-tipe').value = t;
+    var z = document.getElementById('btn-ziyadah');
+    var m = document.getElementById('btn-murajaah');
+    if (t === 'Ziyadah') {
+      z.style.background = 'var(--primary)';
+      z.style.color = 'white';
+      m.style.background = '#F1F5F9';
+      m.style.color = '#94A3B8';
+      document.getElementById('box-nilai').classList.remove('d-none');
+      document.getElementById('box-lanjut').classList.add('d-none');
+    } else {
+      m.style.background = '#10B981';
+      m.style.color = 'white';
+      z.style.background = '#F1F5F9';
+      z.style.color = '#94A3B8';
+      document.getElementById('box-nilai').classList.add('d-none');
+      document.getElementById('box-lanjut').classList.remove('d-none');
+    }
+  }
+  
+  function saveData() {
+    if (!curUser) { showToast('Sesi habis, silakan login ulang', 'error'); return; }
+    var nis = document.getElementById('val-nis').value;
+    var surat = document.getElementById('val-surat').value;
+    var start = parseInt(document.getElementById('val-ayat-start').value);
+    var end = parseInt(document.getElementById('val-ayat-end').value);
+
+    // Validasi Standar
+    if (!nis) { showToast("Pilih Santri dulu", 'error'); return; }
+    if (!surat) { showToast("Pilih Surat dulu", 'error'); return; }
+    if (isNaN(start) || isNaN(end)) { showToast("Nomor ayat wajib diisi", 'error'); return; }
+    if (start > end) { showToast("Ayat Mulai > Akhir!", 'error'); return; }
+    if (start <= 0 || end <= 0) { showToast("Ayat tidak valid", 'error'); return; }
+
+    // --- VALIDASI BARU: CEK AYAT HANTU ---
+    var qData = quranDB.find(x => x.n === surat);
+    if (qData) {
+        if (end > qData.c) {
+            showToast("Surat " + surat + " hanya sampai ayat " + qData.c + "!", 'error');
+            return; // STOP! Jangan simpan.
+        }
+    }
+
+    // Lanjut Simpan
+    var tipe = document.getElementById('val-tipe').value;
+    var d = {
+      kategori: tipe,
+      nisSantri: nis,
+      namaSantri: document.getElementById('txt-selected-santri').innerText,
+      surat: surat,
+      juz: document.getElementById('val-juz').value,
+      ayatMulai: start,
+      ayatSelesai: end,
+      nilai: tipe === 'Ziyadah' ? document.getElementById('val-nilai').value : '',
+      lanjut: tipe === 'Murajaah' ? document.getElementById('val-lanjut').value : '',
+      catatan: document.getElementById('val-catatan').value,
+      namaUst: curUser.nama
+    };
+
+    var btn = document.querySelector('.btn-save');
+    if (btn) { btn.innerText = 'Menyimpan...'; btn.disabled = true; }
+    
+    google.script.run.withSuccessHandler(function(r) {
+      showToast(r);
+      if (btn) { btn.innerText = 'Simpan'; btn.disabled = false; }
+      closeInputView();
+      loadHistory();
+    }).withFailureHandler(function() {
+      showToast('Gagal menyimpan data', 'error');
+      if (btn) { btn.innerText = 'Simpan'; btn.disabled = false; }
+    }).simpanSetoran(d);
+  }
+
+  // --- PROFILE & SETTINGS ---
+  function openEditProfile() {
+    changeScreen('screen-edit-profile');
+    if (curUser) {
+      document.getElementById('edit-nama').value = curUser.nama;
+      document.getElementById('edit-avatar-preview').innerText = curUser.nama.charAt(0).toUpperCase();
+      document.getElementById('edit-hp').value = curUser.hp || '';
+      document.getElementById('edit-pass').value = '';
+    }
+  }
+
+  function saveProfileChanges(btn) {
+    var n = document.getElementById('edit-nama').value;
+    if (!n) {
+      showToast("Nama kosong", 'error');
+      return;
+    }
+    var targetBtn = document.querySelector('#screen-edit-profile .btn-primary') || btn;
+    var old = targetBtn.innerText;
+    targetBtn.innerText = 'Menyimpan...';
+    targetBtn.disabled = true;
+    var d = {
+      id: curUser.id,
+      role: curUser.role,
+      nama: n,
+      hp: document.getElementById('edit-hp').value,
+      pass: document.getElementById('edit-pass').value
+    };
+    google.script.run.withSuccessHandler(function(res) {
+      targetBtn.innerText = old;
+      targetBtn.disabled = false;
+      if (res.status === 'success') {
+        showToast('Profil diperbarui');
+        curUser.nama = n;
+        localStorage.setItem('hifdzul_user', JSON.stringify(curUser));
+        document.getElementById('profile-name').innerText = n;
+        document.getElementById('profile-initial').innerText = n.charAt(0).toUpperCase();
+        changeScreen('screen-profile');
+      } else {
+        showToast(res.message, 'error');
+      }
+    }).updateUserProfile(d);
+  }
+
+  function openProfile() {
+    changeScreen('screen-profile');
+    if (curUser) {
+      document.getElementById('profile-name').innerText = curUser.nama;
+      document.getElementById('profile-role').innerText = curUser.role;
+      document.getElementById('profile-initial').innerText = curUser.nama.charAt(0).toUpperCase();
+    }
+  }
+
+  function closeProfile() {
+    changeScreen('screen-app');
+  }
+
+  function openSettings() {
+    changeScreen('screen-settings');
+  }
+
+  function closeSettings() {
+    changeScreen('screen-profile');
+  }
+  
+
+  ////awal 1///
+
+  function initPrayerWidget() {
+    var url = "";
+    
+    // Update Teks Lokasi di Dashboard (Ambil dari memori)
+    var elLoc = document.getElementById('loc-name');
+    if(elLoc) elLoc.innerText = savedCity;
+
+    // LOGIKA CERDAS: Prioritaskan GPS tersimpan
+    if (savedLat && savedLong && savedLat !== "null") {
+      console.log("Menggunakan Mode GPS Tersimpan: " + savedCity);
+      url = "https://api.aladhan.com/v1/timings?latitude=" + savedLat + "&longitude=" + savedLong + "&method=20";
+    } else {
+      console.log("Menggunakan Mode Kota Manual: " + savedCity);
+      url = "https://api.aladhan.com/v1/timingsByCity?city=" + savedCity + "&country=Indonesia&method=20";
+    }
+
+    fetch(url)
+      .then(response => response.json())
+      .then(data => {
+        if (!data || !data.data || !data.data.timings) {
+          console.log("API response invalid");
+          return;
+        }
+        var timings = data.data.timings;
+        var dateHijri = data.data.date.hijri;
+        var dateGreg = data.data.date.gregorian;
+        
+        // Tanggal Singkat (Feb)
+        var shortMonth = dateGreg.month.en.substring(0, 3);
+        var elDate = document.getElementById('prayer-date-info');
+        if(elDate) elDate.innerText = dateGreg.day + " " + shortMonth + " " + dateGreg.year + " / " + dateHijri.day + " " + dateHijri.month.en + " " + dateHijri.year;
+        
+        processPrayerTimes(timings);
+      })
+      .catch(err => {
+          console.log("Error API, Fallback Jakarta");
+          // Jika error, jangan biarkan kosong, pakai Jakarta
+          if(savedCity !== "Jakarta") {
+              fetch("https://api.aladhan.com/v1/timingsByCity?city=Jakarta&country=Indonesia&method=20")
+              .then(res=>res.json())
+              .then(d=>{
+                if (d && d.data && d.data.timings) processPrayerTimes(d.data.timings);
+              })
+              .catch(function(){ console.log("Fallback Jakarta juga gagal"); });
+          }
+      });
+  }
+
+  function openLocationModal() {
+      document.getElementById('current-city-label').innerText = savedCity;
+      document.getElementById('input-city-name').value = savedCity;
+      document.getElementById('modal-location-settings').classList.add('show');
+  }
+
+  function closeLocationModal() {
+      document.getElementById('modal-location-settings').classList.remove('show');
+  }
+
+  function applyCityManual() {
+      var newCity = document.getElementById('input-city-name').value.trim();
+      if (!newCity) {
+          showToast('Nama kota tidak boleh kosong', 'error');
+          return;
+      }
+      
+      savedCity = newCity;
+      savedLat = null;
+      savedLong = null;
+      localStorage.removeItem('hifdzul_lat');
+      localStorage.removeItem('hifdzul_long');
+      localStorage.setItem('hifdzul_city', newCity);
+      
+      document.getElementById('loc-name').innerText = newCity;
+      
+      closeLocationModal();
+      initPrayerWidget(); 
+      showToast('Lokasi diubah ke ' + newCity);
+  }
+
+  // 4. Fungsi GPS
+  function useCurrentLocation(btn) {
+      if (navigator.geolocation) {
+          var oldText = btn.innerHTML;
+          btn.innerHTML = "<i class='fas fa-circle-notch fa-spin'></i> Melacak...";
+          
+          navigator.geolocation.getCurrentPosition(function(position) {
+              var lat = position.coords.latitude;
+              var long = position.coords.longitude;
+              
+              google.script.run.withSuccessHandler(function(geoData) {
+                  var finalName = "Lokasi GPS";
+
+                  if (geoData && geoData.address) {
+                      var addr = geoData.address;
+                      var district = addr.village || addr.suburb || addr.town || addr.city_district || addr.municipality || addr.county || addr.district;
+                      var city = addr.city || addr.regency || addr.state_district || addr.state;
+
+                      if (district) {
+                          var cleanDist = district.replace(new RegExp("Kecamatan", "i"), "").replace(new RegExp("Kelurahan", "i"), "").trim();
+                          finalName = "Kec. " + cleanDist;
+                      } else if (city) {
+                          finalName = city;
+                      }
+                  }
+
+                  savedCity = finalName;
+                  savedLat = lat;
+                  savedLong = long;
+                  
+                  localStorage.setItem('hifdzul_city', finalName);
+                  localStorage.setItem('hifdzul_lat', lat);
+                  localStorage.setItem('hifdzul_long', long);
+
+                  document.getElementById('loc-name').innerText = finalName;
+
+                  var prayerUrl = "https://api.aladhan.com/v1/timings?latitude=" + lat + "&longitude=" + long + "&method=20";
+                  
+                  fetch(prayerUrl)
+                  .then(res => res.json())
+                  .then(data => {
+                      processPrayerTimes(data.data.timings);
+                      closeLocationModal();
+                      showToast("Lokasi: " + finalName);
+                      btn.innerHTML = oldText;
+                  })
+                  .catch(function() {
+                      closeLocationModal();
+                      showToast("Lokasi tersimpan, tapi jadwal sholat gagal dimuat");
+                      btn.innerHTML = oldText;
+                  });
+
+              }).getGeoLocation(lat, long);
+
+          }, function(error) {
+              showToast('Gagal mendeteksi lokasi. Pastikan Izin GPS Diberikan.', 'error');
+              btn.innerHTML = oldText;
+          });
+      } else {
+          showToast('Browser tidak mendukung GPS.', 'warning');
+      }
+  }
+  
+  function processPrayerTimes(timings) {
+    // Clear interval sebelumnya jika ada
+    if (prayerCountdownInterval) {
+      clearInterval(prayerCountdownInterval);
+      prayerCountdownInterval = null;
+    }
+    
+    var prayers = [
+      { name: "Subuh", time: timings.Fajr },
+      { name: "Dzuhur", time: timings.Dhuhr },
+      { name: "Ashar", time: timings.Asr },
+      { name: "Maghrib", time: timings.Maghrib },
+      { name: "Isya", time: timings.Isha }
+    ];
+
+    var now = new Date();
+    var nextPrayer = null;
+
+    for (var i = 0; i < prayers.length; i++) {
+      if (!prayers[i].time) continue;
+      var pTime = new Date();
+      var parts = prayers[i].time.split(':');
+      pTime.setHours(parts[0], parts[1], 0);
+
+      if (pTime > now) {
+        nextPrayer = prayers[i];
+        nextPrayer.obj = pTime;
+        break;
+      }
+    }
+
+    if (!nextPrayer || !nextPrayer.time) {
+      nextPrayer = prayers[0];
+      var tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      if (nextPrayer.time) {
+        var parts = nextPrayer.time.split(':');
+        tomorrow.setHours(parts[0], parts[1], 0);
+      }
+      nextPrayer.obj = tomorrow;
+      nextPrayer.name = "Subuh";
+    }
+
+    document.getElementById('next-prayer-name').innerText = nextPrayer.name;
+    document.getElementById('next-prayer-time').innerText = nextPrayer.time + " WIB";
+
+    prayerCountdownInterval = setInterval(function() {
+      var now = new Date();
+      var diff = nextPrayer.obj - now;
+
+      if (diff <= 0) diff = 0;
+
+      var hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      var minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      var seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+      var elCdH = document.getElementById('cd-h');
+      var elCdM = document.getElementById('cd-m');
+      var elCdS = document.getElementById('cd-s');
+
+      if(elCdH) elCdH.innerText = hours.toString().padStart(2, '0');
+      if(elCdM) elCdM.innerText = minutes.toString().padStart(2, '0');
+      if(elCdS) elCdS.innerText = seconds.toString().padStart(2, '0');
+
+    }, 1000);
+  }
+  
+  // --- LOGIKA DASHBOARD COCKPIT (HIJAU) ---
+  function startBigClock() {
+    if (bigClockInterval) clearInterval(bigClockInterval);
+    bigClockInterval = setInterval(function() {
+      var d = new Date();
+      var h = d.getHours().toString().padStart(2, '0');
+      var m = d.getMinutes().toString().padStart(2, '0');
+      
+      var elH = document.getElementById('cur-h');
+      var elM = document.getElementById('cur-m');
+      if(elH) elH.innerText = h;
+      if(elM) elM.innerText = m;
+    }, 1000);
+  }
+  
+  // Fungsi ini dipanggil saat ikon titik tiga diklik
+  function openSantriActionMenu() {
+    openSantriAction(currentDetailNIS, currentDetailNama);
+  }
+  
+  // --- JUZ DETAIL FUNCTIONS ---
+  
+  // Dipanggil dari admin (dari screen-santri-detail)
+  function openJuzDetailFromAdmin(juz) {
+    openJuzDetail(juz, viewingNIS, currentDetailNama);
+  }
+  
+  // Dipanggil dari santri sendiri (dari tab-hafalan) atau dari admin
+  function openJuzDetail(juz, targetNis, targetNama) {
+    if (!curUser) return;
+    var nis = targetNis || curUser.id;
+    var nama = targetNama || curUser.nama;
+    
+    currentJuzNumber = juz;
+    currentJuzFilter = 'all';
+    currentJuzPage = 0;
+    juzHasMore = false;
+    currentViewingNIS = nis;
+    
+    // Update Header
+    var titleEl = document.getElementById('juz-detail-title');
+    if (curUser.role !== 'Santri') {
+      titleEl.innerText = nama + ' - Juz ' + juz;
+    } else {
+      titleEl.innerText = 'Juz ' + juz;
+    }
+    
+    // Reset Filter
+    document.querySelectorAll('.juz-filter-btn').forEach(function(btn) {
+      btn.classList.remove('active');
+      if (btn.dataset.filter === 'all') btn.classList.add('active');
+    });
+    document.getElementById('juz-filter-badge').classList.add('d-none');
+    document.getElementById('juz-filter-panel').classList.add('d-none');
+    
+    // Reset List
+    document.getElementById('juz-history-list').innerHTML = '<div class="text-center py-4"><i class="fas fa-circle-notch fa-spin text-primary"></i></div>';
+    document.getElementById('juz-load-more').classList.add('d-none');
+    document.getElementById('juz-no-data').classList.add('d-none');
+    
+    // Load Stats
+    google.script.run.withSuccessHandler(function(stats) {
+      document.getElementById('juz-stat-ziyadah').innerText = stats.ziyadah;
+      document.getElementById('juz-stat-murajaah').innerText = stats.murajaah;
+      document.getElementById('juz-detail-subtitle').innerText = stats.ziyadah + ' Ayat Ziyadah \u2022 ' + stats.murajaah + ' Ayat Murajaah';
+    }).getJuzStats(nis, juz);
+    
+    // Load History
+    loadJuzHistory(true);
+    
+    // Buka sebagai overlay (TANPA changeScreen, agar layar sebelumnya tetap ada)
+    var screen = document.getElementById('screen-juz-detail');
+    if(screen) screen.classList.add('layer-visible');
+  }
+  
+  function closeJuzDetail() {
+    // Tutup overlay saja (layar sebelumnya otomatis terlihat kembali)
+    var screen = document.getElementById('screen-juz-detail');
+    if(screen) screen.classList.remove('layer-visible');
+  }
+  
+  function toggleJuzFilter() {
+    var panel = document.getElementById('juz-filter-panel');
+    panel.classList.toggle('d-none');
+  }
+  
+  function setJuzFilter(filter, btn) {
+    currentJuzFilter = filter;
+    currentJuzPage = 0;
+    
+    // Update UI
+    document.querySelectorAll('.juz-filter-btn').forEach(function(b) {
+      b.classList.remove('active');
+    });
+    btn.classList.add('active');
+    
+    // Show/hide badge
+    var badge = document.getElementById('juz-filter-badge');
+    if (filter === 'all') {
+      badge.classList.add('d-none');
+    } else {
+      badge.classList.remove('d-none');
+    }
+    
+    // Reload
+    loadJuzHistory(true);
+  }
+  
+  function loadJuzHistory(reset) {
+    if (reset) {
+      currentJuzPage = 0;
+      document.getElementById('juz-history-list').innerHTML = '';
+    }
+    
+    google.script.run.withSuccessHandler(function(result) {
+      var list = document.getElementById('juz-history-list');
+      var noData = document.getElementById('juz-no-data');
+      var loadMore = document.getElementById('juz-load-more');
+      
+      if (result.data.length === 0 && currentJuzPage === 0) {
+        noData.classList.remove('d-none');
+        loadMore.classList.add('d-none');
+        return;
+      }
+      
+      noData.classList.add('d-none');
+      
+      result.data.forEach(function(item) {
+        var isZiyadah = item.tipe === 'Ziyadah';
+        var badgeClass = isZiyadah ? 'badge-ziyadah' : 'badge-murajaah';
+        var info = isZiyadah ? (item.nilai || '-') : (item.lanjut || '-');
+        var icon = isZiyadah ? 'fa-book-open' : 'fa-microphone';
+        var iconBg = isZiyadah ? 'bg-red-soft' : 'bg-green-soft';
+        var iconColor = isZiyadah ? 'text-danger' : 'text-success';
+        
+        // Format tanggal
+        var tgl = formatTanggal_(item.tanggal);
+        
+        // Admin bisa klik kartu untuk edit/hapus
+        var isAdmin = curUser && curUser.role !== 'Santri';
+        var cardClick = '';
+        var cardStyle = '';
+        if (isAdmin) {
+          // Format data sesuai yang diharapkan triggerEditSetoran
+          var editData = {
+            nama: item.nama, nis: item.nis, tipe: item.tipe, juz: item.juz,
+            surat: item.surat, ayatStart: item.ayatMulai, ayatEnd: item.ayatSelesai,
+            nilai_info: item.nilai || item.lanjut || '-', catatan: item.catatan || '',
+            rawDate: item.tanggal, ayat: item.ayatMulai + '-' + item.ayatSelesai
+          };
+          var dataStr = JSON.stringify(editData).replace(/"/g, '&quot;');
+          cardClick = 'onclick="openSetoranAction(' + dataStr + ')"';
+          cardStyle = 'style="cursor:pointer;"';
+        }
+        
+        var html = '<div class="juz-history-card" ' + cardClick + ' ' + cardStyle + '>' +
+          '<div class="d-flex justify-content-between align-items-start mb-2">' +
+            '<div class="d-flex align-items-center">' +
+              '<div class="' + iconBg + ' rounded-circle d-flex align-items-center justify-content-center me-2" style="width:32px;height:32px;">' +
+                '<i class="fas ' + icon + ' ' + iconColor + '" style="font-size:12px;"></i>' +
+              '</div>' +
+              '<div>' +
+                '<h6 class="fw-bold mb-0 text-dark" style="font-size:13px;">' + escapeHtml(item.surat) + '</h6>' +
+                '<small class="text-muted" style="font-size:10px;">Ayat ' + item.ayatMulai + '-' + item.ayatSelesai + '</small>' +
+              '</div>' +
+            '</div>' +
+            '<span class="card-badge ' + badgeClass + '">' + escapeHtml(item.tipe) + '</span>' +
+          '</div>' +
+          '<div class="d-flex justify-content-between align-items-center">' +
+            '<small class="text-muted" style="font-size:10px;"><i class="far fa-clock me-1"></i>' + escapeHtml(tgl) + '</small>' +
+            '<small class="fw-bold text-primary" style="font-size:11px;">' + escapeHtml(info) + '</small>' +
+          '</div>' +
+          (item.catatan ? '<div class="mt-2 p-2 bg-light rounded-3"><small class="text-muted" style="font-size:10px;"><i class="fas fa-comment-dots me-1"></i>' + escapeHtml(item.catatan) + '</small></div>' : '') +
+        '</div>';
+        
+        list.innerHTML += html;
+      });
+      
+      // Tampilkan/sembunyikan tombol load more
+      if (result.hasMore) {
+        loadMore.classList.remove('d-none');
+        juzHasMore = true;
+      } else {
+        loadMore.classList.add('d-none');
+        juzHasMore = false;
+      }
+      
+    }).getRiwayatByJuz(currentViewingNIS || curUser.id, currentJuzNumber, currentJuzFilter, currentJuzPage);
+  }
+  
+  function loadMoreJuzHistory() {
+    currentJuzPage++;
+    loadJuzHistory(false);
+  }
+  
+  function formatTanggal_(dateStr) {
+    if (!dateStr) return '-';
+    try {
+      var cleanStr = String(dateStr).replace(/'/g, "").trim();
+      var parts = cleanStr.split(' ');
+      if (parts.length < 2) return cleanStr;
+      var d = parts[0].split('-');
+      var t = parts[1].split(':');
+      var months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'];
+      var monthIdx = parseInt(d[1]) - 1;
+      var monthName = months[monthIdx] || d[1];
+      return d[0] + ' ' + monthName + ' ' + d[2] + ' ' + t[0] + ':' + t[1];
+    } catch (e) { return String(dateStr); }
+  }
+  
+  // --- LAPORAN BULANAN FUNCTIONS ---
+  
+  function openMyLaporan() {
+    if (curUser.role === 'Santri') {
+      openLaporanSantri(curUser.id, curUser.nama);
+    } else {
+      openLaporan();
+    }
+  }
+  
+  // --- JADWAL HAFALAN ---
+  var jadwalCurrentFilter = '';
+  var allJadwalData = [];
+  
+  function filterJadwalHari(hari, btn) {
+    jadwalCurrentFilter = hari;
+    document.querySelectorAll('.jadwal-chip').forEach(function(c) {
+      c.classList.remove('active');
+      c.style.background = '#F1F5F9';
+      c.style.color = '#64748B';
+    });
+    btn.classList.add('active');
+    btn.style.background = '#2563EB';
+    btn.style.color = 'white';
+    renderJadwalTable();
+  }
+  
+  function loadJadwalData() {
+    document.getElementById('jadwal-table-body').innerHTML = '<div class="text-center py-4 text-muted small"><i class="fas fa-circle-notch fa-spin"></i> Memuat...</div>';
+    
+    var filterRole = curUser ? curUser.role : '';
+    var filterId = '';
+    if (filterRole === 'Santri') {
+      filterId = curUser.kelas || '';
+    } else if (filterRole === 'Ust' || filterRole === 'Ustz') {
+      filterId = curUser.id || '';
+    }
+    
+    google.script.run.withSuccessHandler(function(data) {
+      allJadwalData = data;
+      renderJadwalTable();
+    }).getAllJadwal(filterRole, filterId);
+  }
+  
+  function renderJadwalTable() {
+    var filtered = (!allJadwalData) ? [] : (jadwalCurrentFilter
+      ? allJadwalData.filter(function(j) { return j.hari === jadwalCurrentFilter; })
+      : allJadwalData);
+
+    var tbody = document.getElementById('jadwal-table-body');
+    var isSantri = curUser && curUser.role === 'Santri';
+    var aksiHeader = document.getElementById('jadwal-col-aksi-header');
+    if (aksiHeader) aksiHeader.style.display = isSantri ? 'none' : '';
+
+    if (filtered.length === 0) {
+      tbody.innerHTML = '<div class="text-center py-5 text-muted"><i class="fas fa-calendar-times fa-2x mb-2 opacity-25"></i><p class="small">Belum ada jadwal</p></div>';
+      return;
+    }
+
+    var html = '';
+    filtered.forEach(function(j) {
+      var waktu = (j.jamMulai || '') + (j.jamSelesai ? ' - ' + j.jamSelesai : '');
+      var aksiCol = isSantri ? '' : '<div style="width:55px; text-align:center;">'
+        + '<i class="fas fa-pen text-primary me-2" style="cursor:pointer;font-size:12px;" onclick="editJadwalFromData(' + j.no + ')"></i>'
+        + '<i class="fas fa-trash text-danger" style="cursor:pointer;font-size:12px;" onclick="hapusJadwal(' + j.no + ')"></i>'
+        + '</div>';
+      html += '<div class="d-flex align-items-center py-3 px-3 border-bottom" style="font-size:11px;">'
+        + '<div style="width:50px; font-weight:600; color:#1E293B;">' + escapeHtml(j.hari.substring(0, 3)) + '</div>'
+        + '<div style="width:70px; color:#64748B;">' + escapeHtml(waktu) + '</div>'
+        + '<div style="width:60px; font-weight:600; color:#2563EB;">' + escapeHtml(j.kelas) + '</div>'
+        + '<div style="flex:1; color:#1E293B;">' + escapeHtml(j.mapel || '-') + '</div>'
+        + '<div style="width:50px; color:#64748B;">' + escapeHtml(j.ruangan || '-') + '</div>'
+        + aksiCol
+        + '</div>';
+    });
+
+    tbody.innerHTML = html;
+  }
+  
+  function openFormJadwal(data) {
+    document.getElementById('jadwal-form-title').innerText = data ? 'Edit Jadwal' : 'Tambah Jadwal';
+    document.getElementById('jadwal-edit-no').value = data ? data.no : '';
+    document.getElementById('jadwal-input-hari').value = data ? data.hari : 'Senin';
+    document.getElementById('jadwal-input-jam-start').value = data ? (data.jamMulai || '07:00') : '07:00';
+    document.getElementById('jadwal-input-jam-end').value = data ? (data.jamSelesai || '08:00') : '08:00';
+    
+    // Load kelas dropdown
+    google.script.run.withSuccessHandler(function(kelasList) {
+      var sel = document.getElementById('jadwal-input-kelas');
+      sel.innerHTML = '<option value="">Pilih Kelas</option>';
+      kelasList.forEach(function(k) { sel.innerHTML += '<option value="' + escapeHtml(k) + '">' + escapeHtml(k) + '</option>'; });
+      if (data && data.kelas) sel.value = data.kelas;
+    }).getKelasList();
+    
+    // Load mapel dropdown
+    var mapelList = ['Tahfidz', 'Tajwid', 'Fiqih', 'Aqidah', 'Bahasa Arab', 'Al-Qur\'an'];
+    var selMapel = document.getElementById('jadwal-input-mapel');
+    selMapel.innerHTML = '<option value="">Pilih Mapel</option>';
+    mapelList.forEach(function(m) { selMapel.innerHTML += '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>'; });
+    if (data && data.mapel) selMapel.value = data.mapel;
+    
+    // Load ruangan dropdown
+    var ruanganList = ['R-Utama', 'R-A', 'R-B', 'R-C', 'R-D', 'R-E', 'Masjid', 'Aula'];
+    var selRuangan = document.getElementById('jadwal-input-ruangan');
+    selRuangan.innerHTML = '<option value="">Pilih Ruangan</option>';
+    ruanganList.forEach(function(r) { selRuangan.innerHTML += '<option value="' + escapeHtml(r) + '">' + escapeHtml(r) + '</option>'; });
+    if (data && data.ruangan) selRuangan.value = data.ruangan;
+    
+    // Load guru dropdown atau auto-fill untuk Ust/Ustz
+    var guruSection = document.getElementById('jadwal-guru-section');
+    var guruSelect = document.getElementById('jadwal-input-guru');
+    var guruAutoInput = document.getElementById('jadwal-guru-auto');
+    
+    if (curUser && (curUser.role === 'Ust' || curUser.role === 'Ustz')) {
+      // Ust/Ustz: otomatis isi nama sendiri, sembunyikan dropdown
+      if (guruSection) guruSection.classList.add('d-none');
+      if (guruAutoInput) {
+        guruAutoInput.value = curUser.nama;
+        guruAutoInput.dataset.login = curUser.id;
+      }
+    } else {
+      // Admin: tampilkan dropdown guru
+      if (guruSection) guruSection.classList.remove('d-none');
+      google.script.run.withSuccessHandler(function(guruList) {
+        guruSelect.innerHTML = '<option value="">Pilih Guru</option>';
+        guruList.forEach(function(g) { 
+          guruSelect.innerHTML += '<option value="' + escapeHtml(g.nama) + '" data-login="' + escapeHtml(g.login) + '">' + escapeHtml(g.nama) + '</option>'; 
+        });
+        if (data && data.guru) guruSelect.value = data.guru;
+      }).getListGuru();
+    }
+    
+    changeScreen('screen-form-jadwal');
+  }
+
+  function closeFormJadwal() {
+    changeScreen('screen-app');
+  }
+  
+  function editJadwalFromData(no) {
+    var item = allJadwalData.find(function(j) { return j.no === no; });
+    if (item) openFormJadwal(item);
+  }
+  
+  function saveJadwal() {
+    var kelas = document.getElementById('jadwal-input-kelas').value;
+    var mapel = document.getElementById('jadwal-input-mapel').value;
+    
+    if (!kelas || !mapel) {
+      showToast('Lengkapi semua field wajib', 'error');
+      return;
+    }
+    
+    // Ambil data guru (auto atau dropdown)
+    var guruNama = '';
+    var guruLogin = '';
+    
+    if (curUser && (curUser.role === 'Ust' || curUser.role === 'Ustz')) {
+      // Ust/Ustz: otomatis dari data login
+      var guruAutoInput = document.getElementById('jadwal-guru-auto');
+      guruNama = curUser.nama;
+      guruLogin = curUser.id;
+    } else {
+      // Admin: dari dropdown
+      var guruSelect = document.getElementById('jadwal-input-guru');
+      guruNama = guruSelect.value;
+      if (guruSelect.selectedIndex > 0) {
+        guruLogin = guruSelect.options[guruSelect.selectedIndex].dataset.login || '';
+      }
+    }
+    
+    var editNo = document.getElementById('jadwal-edit-no').value;
+    var payload = {
+      hari: document.getElementById('jadwal-input-hari').value,
+      kelas: kelas,
+      jamMulai: document.getElementById('jadwal-input-jam-start').value,
+      jamSelesai: document.getElementById('jadwal-input-jam-end').value,
+      mapel: mapel,
+      ruangan: document.getElementById('jadwal-input-ruangan').value,
+      guru: guruNama,
+      guruLogin: guruLogin
+    };
+    
+    if (editNo !== '') {
+      payload.no = parseInt(editNo);
+      console.log('Updating jadwal:', payload);
+      google.script.run.withSuccessHandler(function(res) {
+        console.log('Update result:', res);
+        if (res.status === 'success') {
+          showToast('Jadwal diperbarui');
+          closeFormJadwal();
+          loadJadwalData();
+        }
+      }).updateJadwal(payload);
+    } else {
+      console.log('Adding jadwal:', payload);
+      google.script.run.withSuccessHandler(function(res) {
+        console.log('Add result:', res);
+        showToast(res.message || 'Jadwal ditambahkan');
+        closeFormJadwal();
+        loadJadwalData();
+      }).addJadwal(payload);
+    }
+  }
+  
+  function hapusJadwal(no) {
+    openDeleteModal(function() {
+      google.script.run.withSuccessHandler(function(res) {
+        document.getElementById('btn-confirm-yes').innerText = "Ya, Hapus";
+        document.getElementById('btn-confirm-yes').disabled = false;
+        closeDeleteModal();
+        if (res.status === 'success') {
+          showToast('Jadwal dihapus');
+          loadJadwalData();
+        }
+      }).deleteJadwal(no);
+    });
+  }
+
+  // --- DATA GURU ---
+  var guruDB = [];
+  var selectedGuruLogin = null;
+
+  function loadGuru() {
+    google.script.run.withSuccessHandler(function(d) {
+      guruDB = d;
+      renderGuruList(d);
+    }).getListGuru();
+  }
+
+  function renderGuruList(data) {
+    var html = '';
+    if (!data || data.length === 0) {
+      html = '<div class="text-center text-muted py-5 small">Belum ada data guru.</div>';
+    } else {
+      data.forEach(function(g) {
+        html += '<div class="item-row">'
+          + '<div class="d-flex align-items-center flex-grow-1">'
+          + '<div class="avatar-circle">' + escapeHtml(g.nama.charAt(0)) + '</div>'
+          + '<div>'
+          + '<h6 class="fw-bold mb-0 text-dark">' + escapeHtml(g.nama) + '</h6>'
+          + '<small class="text-muted" style="font-size:10px;">' + escapeHtml(g.login) + ' &bull; ' + escapeHtml(g.mapel || '-') + '</small>'
+          + '</div>'
+          + '</div>'
+          + '<div class="d-flex align-items-center gap-2">'
+          + '<i class="fas fa-eye text-info" style="cursor:pointer;font-size:13px;" onclick="viewGuruDetail(\'' + escAttr(g.login) + '\')"></i>'
+          + '<i class="fas fa-pen text-primary" style="cursor:pointer;font-size:13px;" onclick="editGuruDirect(\'' + escAttr(g.login) + '\')"></i>'
+          + '<i class="fas fa-trash text-danger" style="cursor:pointer;font-size:13px;" onclick="selectedGuruLogin=\'' + escAttr(g.login) + '\'; triggerDeleteGuru()"></i>'
+          + '</div>'
+          + '</div>';
+      });
+    }
+    document.getElementById('list-guru').innerHTML = html;
+  }
+
+  function filterGuru() {
+    var k = document.getElementById('searchGuru').value.toLowerCase();
+    var filtered = guruDB.filter(function(g) {
+      return g.nama.toLowerCase().includes(k) || String(g.login).toLowerCase().includes(k);
+    });
+    renderGuruList(filtered);
+  }
+
+  function openGuruAction(login, nama) {
+    selectedGuruLogin = login;
+    document.getElementById('action-guru-name').innerText = nama;
+    document.getElementById('action-guru-id').innerText = login;
+    document.getElementById('modal-guru-action').classList.add('show');
+  }
+
+  function closeGuruAction() {
+    document.getElementById('modal-guru-action').classList.remove('show');
+  }
+
+  function editGuruDirect(login) {
+    selectedGuruLogin = login;
+    google.script.run.withSuccessHandler(function(data) {
+      if (data) {
+        changeScreen('screen-edit-guru');
+        document.getElementById('edit-guru-login').value = data.login;
+        document.getElementById('edit-guru-nama').value = data.nama;
+        document.getElementById('edit-guru-role').value = data.role || 'Guru';
+        document.getElementById('edit-guru-mapel').value = data.mapel;
+        document.getElementById('edit-guru-hp').value = data.hp;
+        document.getElementById('edit-guru-status').value = data.status;
+        document.getElementById('edit-guru-pass').value = '';
+        // Foto
+        var img = document.getElementById('edit-guru-foto-preview');
+        var ph = document.getElementById('edit-guru-foto-placeholder');
+        if (data.foto) {
+          img.src = data.foto;
+          img.classList.remove('d-none');
+          ph.classList.add('d-none');
+        } else {
+          img.classList.add('d-none');
+          ph.classList.remove('d-none');
+        }
+        document.getElementById('edit-guru-foto').value = '';
+      } else {
+        showToast('Gagal ambil data guru', 'error');
+      }
+    }).getGuruDetail(login);
+  }
+
+  function previewEditGuruFoto(input) {
+    if (input.files && input.files[0]) {
+      compressImage(input.files[0], 200, 0.5, function(compressed) {
+        var img = document.getElementById('edit-guru-foto-preview');
+        img.src = compressed;
+        img.classList.remove('d-none');
+        document.getElementById('edit-guru-foto-placeholder').classList.add('d-none');
+        input.dataset.compressed = compressed;
+      });
+    }
+  }
+
+  function processUpdateGuru() {
+    var nama = document.getElementById('edit-guru-nama').value.trim();
+    if (!nama) {
+      showToast('Nama wajib diisi', 'error');
+      return;
+    }
+    
+    var fotoInput = document.getElementById('edit-guru-foto');
+    var foto = (fotoInput.files.length > 0 && fotoInput.dataset.compressed) ? fotoInput.dataset.compressed : '';
+    
+    var payload = {
+      login: document.getElementById('edit-guru-login').value,
+      nama: nama,
+      role: document.getElementById('edit-guru-role').value,
+      mapel: document.getElementById('edit-guru-mapel').value,
+      hp: document.getElementById('edit-guru-hp').value,
+      status: document.getElementById('edit-guru-status').value,
+      password: document.getElementById('edit-guru-pass').value,
+      foto: foto
+    };
+    
+    google.script.run.withSuccessHandler(function(res) {
+      if (res.status === 'success') {
+        showToast('Guru diperbarui');
+        closeEditGuru();
+        loadGuru();
+      } else {
+        showToast(res.message, 'error');
+      }
+    }).updateGuru(payload);
+  }
+
+  function closeEditGuru() {
+    changeScreen('screen-app');
+  }
+
+  function viewGuruDetail(login) {
+    google.script.run.withSuccessHandler(function(data) {
+      if (data) {
+        changeScreen('screen-detail-guru');
+        var img = document.getElementById('detail-guru-foto');
+        var ph = document.getElementById('detail-guru-initial');
+        if (data.foto) {
+          img.src = data.foto;
+          img.classList.remove('d-none');
+          ph.classList.add('d-none');
+        } else {
+          img.classList.add('d-none');
+          ph.classList.remove('d-none');
+          ph.innerText = data.nama.charAt(0).toUpperCase();
+        }
+        document.getElementById('detail-guru-nama').innerText = data.nama;
+        document.getElementById('detail-guru-login').innerText = 'Username: ' + data.login;
+        document.getElementById('detail-guru-role').innerText = data.role || 'Guru';
+        document.getElementById('detail-guru-mapel').innerText = data.mapel || '-';
+        document.getElementById('detail-guru-hp').innerText = data.hp || '-';
+        document.getElementById('detail-guru-status').innerText = data.status;
+      } else {
+        showToast('Gagal ambil data guru', 'error');
+      }
+    }).getGuruDetail(login);
+  }
+
+  function closeDetailGuru() {
+    changeScreen('screen-app');
+  }
+
+  function openAddGuru() {
+    changeScreen('screen-add-guru');
+    document.getElementById('guru-foto-preview').classList.add('d-none');
+    document.getElementById('guru-foto-placeholder').classList.remove('d-none');
+    document.getElementById('guru-foto').value = '';
+  }
+
+  function closeAddGuru() {
+    changeScreen('screen-app');
+  }
+
+  function previewGuruFoto(input) {
+    if (input.files && input.files[0]) {
+      compressImage(input.files[0], 200, 0.5, function(compressed) {
+        var img = document.getElementById('guru-foto-preview');
+        img.src = compressed;
+        img.classList.remove('d-none');
+        document.getElementById('guru-foto-placeholder').classList.add('d-none');
+        input.dataset.compressed = compressed;
+      });
+    }
+  }
+
+  function saveNewGuru() {
+    var login = document.getElementById('guru-input-login').value.trim();
+    var nama = document.getElementById('guru-input-nama').value.trim();
+    
+    if (!login || !nama) {
+      showToast('Username dan Nama wajib diisi', 'error');
+      return;
+    }
+    
+    var fotoInput = document.getElementById('guru-foto');
+    var foto = (fotoInput.files.length > 0 && fotoInput.dataset.compressed) ? fotoInput.dataset.compressed : '';
+    
+    var payload = {
+      login: login,
+      nama: nama,
+      role: document.getElementById('guru-input-role').value,
+      mapel: document.getElementById('guru-input-mapel').value,
+      hp: document.getElementById('guru-input-hp').value,
+      status: document.getElementById('guru-input-status').value,
+      password: document.getElementById('guru-input-password').value,
+      foto: foto
+    };
+    
+    google.script.run.withSuccessHandler(function(res) {
+      if (res.status === 'success') {
+        showToast('Guru ditambahkan');
+        closeAddGuru();
+        loadGuru();
+      } else {
+        showToast(res.message, 'error');
+      }
+    }).addGuru(payload);
+  }
+
+  function closeFormGuru() {
+    document.getElementById('modal-form-guru').classList.remove('show');
+  }
+
+  function triggerEditGuru() {
+    closeGuruAction();
+    google.script.run.withSuccessHandler(function(data) {
+      if (data) {
+        document.getElementById('guru-form-title').innerText = 'Edit Guru';
+        document.getElementById('guru-edit-login').value = data.login;
+        document.getElementById('guru-input-login').value = data.login;
+        document.getElementById('guru-input-login').readOnly = true;
+        document.getElementById('guru-input-nama').value = data.nama;
+        document.getElementById('guru-input-mapel').value = data.mapel;
+        document.getElementById('guru-input-hp').value = data.hp;
+        document.getElementById('guru-input-status').value = data.status;
+        document.getElementById('guru-input-password').value = '';
+        document.getElementById('modal-form-guru').classList.add('show');
+      } else {
+        showToast('Gagal ambil data guru', 'error');
+      }
+    }).getGuruDetail(selectedGuruLogin);
+  }
+
+  function saveGuru() {
+    var login = document.getElementById('guru-input-login').value.trim();
+    var nama = document.getElementById('guru-input-nama').value.trim();
+    
+    if (!login || !nama) {
+      showToast('Username dan Nama wajib diisi', 'error');
+      return;
+    }
+    
+    var payload = {
+      login: login,
+      nama: nama,
+      mapel: document.getElementById('guru-input-mapel').value,
+      hp: document.getElementById('guru-input-hp').value,
+      status: document.getElementById('guru-input-status').value,
+      password: document.getElementById('guru-input-password').value
+    };
+    
+    var editLogin = document.getElementById('guru-edit-login').value;
+    
+    if (editLogin) {
+      payload.login = editLogin;
+      google.script.run.withSuccessHandler(function(res) {
+        if (res.status === 'success') {
+          showToast('Guru diperbarui');
+          closeFormGuru();
+          loadGuru();
+        } else {
+          showToast(res.message, 'error');
+        }
+      }).updateGuru(payload);
+    } else {
+      google.script.run.withSuccessHandler(function(res) {
+        if (res.status === 'success') {
+          showToast('Guru ditambahkan');
+          closeFormGuru();
+          loadGuru();
+        } else {
+          showToast(res.message, 'error');
+        }
+      }).addGuru(payload);
+    }
+  }
+
+  function triggerDeleteGuru() {
+    closeGuruAction();
+    openDeleteModal(function() {
+      google.script.run.withSuccessHandler(function(res) {
+        document.getElementById('btn-confirm-yes').innerText = "Ya, Hapus";
+        document.getElementById('btn-confirm-yes').disabled = false;
+        closeDeleteModal();
+        if (res.status === 'success') {
+          showToast('Guru dihapus');
+          loadGuru();
+        } else {
+          showToast(res.message, 'error');
+        }
+      }).deleteGuru(selectedGuruLogin);
+    });
+  }
+
+  function openKalender() {
+    closeProfile();
+    setTimeout(function() {
+      changeScreen('screen-app');
+      var kalenderNav = document.getElementById('nav-item-kalender');
+      navTo('kalender', kalenderNav);
+    }, 300);
+  }
+  
+  function openLaporan() {
+    var now = new Date();
+    document.getElementById('laporan-bulan-awal').value = now.getMonth() + 1;
+    document.getElementById('laporan-bulan-akhir').value = now.getMonth() + 1;
+    
+    var tahunSelect = document.getElementById('laporan-tahun');
+    tahunSelect.innerHTML = '';
+    for (var y = now.getFullYear(); y >= now.getFullYear() - 2; y--) {
+      tahunSelect.innerHTML += '<option value="' + y + '">' + y + '</option>';
+    }
+    
+    google.script.run.withSuccessHandler(function(kelasList) {
+      var select = document.getElementById('laporan-kelas');
+      select.innerHTML = '<option value="">Semua</option>';
+      kelasList.forEach(function(k) {
+        select.innerHTML += '<option value="' + escapeHtml(k) + '">' + escapeHtml(k) + '</option>';
+      });
+    }).getKelasList();
+    
+    changeScreen('screen-laporan');
+    loadLaporanData();
+  }
+  
+  function closeLaporan() {
+    changeScreen('screen-app');
+  }
+  
+  function loadLaporanData() {
+    var bulanAwal = parseInt(document.getElementById('laporan-bulan-awal').value);
+    var bulanAkhir = parseInt(document.getElementById('laporan-bulan-akhir').value);
+    var tahun = parseInt(document.getElementById('laporan-tahun').value);
+    var kelas = document.getElementById('laporan-kelas').value;
+    
+    document.getElementById('laporan-table-body').innerHTML = '<div class="text-center py-4 text-muted small"><i class="fas fa-circle-notch fa-spin"></i> Memuat data...</div>';
+    
+    google.script.run.withSuccessHandler(function(result) {
+      document.getElementById('lap-total-santri').innerText = result.summary.totalSantri;
+      document.getElementById('lap-total-ziyadah').innerText = result.summary.totalZiyadah;
+      document.getElementById('lap-total-murajaah').innerText = result.summary.totalMurajaah;
+      document.getElementById('lap-total-setor').innerText = result.summary.totalSetor;
+      
+      // Render table
+      var tbody = document.getElementById('laporan-table-body');
+      
+      if (result.data.length === 0) {
+        tbody.innerHTML = '<div class="text-center py-4 text-muted small">Tidak ada data untuk periode ini.</div>';
+        return;
+      }
+      
+      var html = '';
+      result.data.forEach(function(item, idx) {
+        var hasData = item.ziyadahAyat > 0 || item.murajaahAyat > 0;
+        var bgColor = idx % 2 === 0 ? '' : 'background:#FAFBFC;';
+        var kelasBadge = item.kelas ? ' <span style="font-size:8px;color:#8B5CF6;">' + escapeHtml(item.kelas) + '</span>' : '';
+        
+        html += '<div class="d-flex align-items-center py-2 px-3 border-bottom" style="font-size:11px;' + bgColor + '">'
+          + '<div style="width:30px; color:#94A3B8;">' + (idx + 1) + '</div>'
+          + '<div style="flex:1;"><span class="fw-bold text-dark">' + escapeHtml(item.nama) + '</span>' + kelasBadge + '</div>'
+          + '<div style="width:55px; text-align:center; color:#EF4444; font-weight:600;">' + item.ziyadahAyat + '</div>'
+          + '<div style="width:55px; text-align:center; color:#10B981; font-weight:600;">' + item.murajaahAyat + '</div>'
+          + '<div style="width:45px; text-align:center; color:#64748B;">' + item.setorZiyadah + '</div>'
+          + '<div style="width:45px; text-align:center; color:#64748B;">' + item.setorMurajaah + '</div>'
+          + '</div>';
+      });
+      
+      tbody.innerHTML = html;
+      
+    }).getMonthlyReport(bulanAwal, bulanAkhir, tahun, kelas);
+  }
+  
+  function printLaporan() {
+    var bulanAwal = document.getElementById('laporan-bulan-awal');
+    var bulanAkhir = document.getElementById('laporan-bulan-akhir');
+    var tahun = document.getElementById('laporan-tahun').value;
+    var kelas = document.getElementById('laporan-kelas');
+    
+    var bAwalText = bulanAwal.options[bulanAwal.selectedIndex].text;
+    var bAkhirText = bulanAkhir.options[bulanAkhir.selectedIndex].text;
+    var kelasText = kelas.options[kelas.selectedIndex].text;
+    var periode = (bAwalText === bAkhirText) ? bAwalText + ' ' + tahun : bAwalText + ' - ' + bAkhirText + ' ' + tahun;
+    
+    var summary = {
+      santri: document.getElementById('lap-total-santri').innerText,
+      ziyadah: document.getElementById('lap-total-ziyadah').innerText,
+      murajaah: document.getElementById('lap-total-murajaah').innerText,
+      setor: document.getElementById('lap-total-setor').innerText
+    };
+    
+    var rows = document.getElementById('laporan-table-body').children;
+    var tableRows = '';
+    for (var i = 0; i < rows.length; i++) {
+      var cells = rows[i].children;
+      if (cells.length >= 6) {
+        tableRows += '<tr>'
+          + '<td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[0].innerText + '</td>'
+          + '<td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;font-weight:600;">' + cells[1].innerText + '</td>'
+          + '<td class="tc" style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[2].innerText + '</td>'
+          + '<td class="tc" style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[3].innerText + '</td>'
+          + '<td class="tc" style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[4].innerText + '</td>'
+          + '<td class="tc" style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[5].innerText + '</td>'
+          + '</tr>';
+      }
+    }
+    
+    var printContent = '<!DOCTYPE html><html><head><title>Laporan Hafalan</title>'
+      + '<style>'
+      + 'body{font-family:Arial,sans-serif;padding:30px;color:#333;}'
+      + 'h1{font-size:18px;text-align:center;margin-bottom:5px;}'
+      + '.periode{text-align:center;font-size:12px;color:#666;margin-bottom:15px;}'
+      + '.summary{display:flex;justify-content:space-between;margin:20px 0;padding:15px 20px;background:#f5f5f5;border-radius:8px;}'
+      + '.summary-item{text-align:center;flex:1;}'
+      + '.summary-item .num{font-size:14px;font-weight:bold;}'
+      + '.summary-item .lbl{font-size:14px;color:#333;}'
+      + 'table{width:100%;border-collapse:collapse;margin-top:15px;}'
+      + 'th{background:#f0f0f0;padding:8px;font-size:11px;text-align:left;border-bottom:2px solid #ddd;}'
+      + '.tc{text-align:center;}'
+      + '.footer{margin-top:30px;font-size:10px;color:#999;text-align:center;}'
+      + '</style></head><body>'
+      + '<h1>LAPORAN HAFALAN BULANAN</h1>'
+      + '<p class="periode">Periode: ' + periode + ' | Kelas: ' + kelasText + '</p>'
+      + '<div class="summary">'
+      + '<div class="summary-item"><span class="num">' + summary.santri + '</span> <span class="lbl">Santri Aktif</span></div>'
+      + '<div class="summary-item"><span class="num" style="color:#EF4444;">' + summary.ziyadah + '</span> <span class="lbl">Ayat Ziyadah</span></div>'
+      + '<div class="summary-item"><span class="num" style="color:#10B981;">' + summary.murajaah + '</span> <span class="lbl">Ayat Murajaah</span></div>'
+      + '<div class="summary-item"><span class="num" style="color:#F59E0B;">' + summary.setor + '</span> <span class="lbl">Total Setoran</span></div>'
+      + '</div>'
+      + '<table><thead><tr><th>No</th><th>Nama</th><th class="tc">Ziyadah</th><th class="tc">Murajaah</th><th class="tc">Set.Z</th><th class="tc">Set.M</th></tr></thead>'
+      + '<tbody>' + tableRows + '</tbody></table>'
+      + '<div class="footer">Dicetak pada ' + new Date().toLocaleDateString('id-ID', {day:'numeric',month:'long',year:'numeric'}) + '</div>'
+      + '</body></html>';
+    
+    var printWindow = window.open('', '_blank');
+    printWindow.document.write(printContent);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(function() { printWindow.print(); }, 500);
+  }
+  
+  // --- LAPORAN PER SANTRI ---
+  var currentLaporanSantriNIS = null;
+  var currentLaporanSantriNama = null;
+  
+  function openLaporanSantri(nis, nama) {
+    currentLaporanSantriNIS = nis;
+    currentLaporanSantriNama = nama;
+    
+    document.getElementById('ls-header-nama').innerText = nama;
+    
+    var now = new Date();
+    document.getElementById('ls-bulan-awal').value = now.getMonth() + 1;
+    document.getElementById('ls-bulan-akhir').value = now.getMonth() + 1;
+    
+    var tahunSelect = document.getElementById('ls-tahun');
+    tahunSelect.innerHTML = '';
+    for (var y = now.getFullYear(); y >= now.getFullYear() - 2; y--) {
+      tahunSelect.innerHTML += '<option value="' + y + '">' + y + '</option>';
+    }
+    
+    changeScreen('screen-laporan-santri');
+    loadSantriLaporanData();
+  }
+  
+  function closeLaporanSantri() {
+    changeScreen('screen-app');
+  }
+  
+  function loadSantriLaporanData() {
+    var bulanAwal = parseInt(document.getElementById('ls-bulan-awal').value);
+    var bulanAkhir = parseInt(document.getElementById('ls-bulan-akhir').value);
+    var tahun = parseInt(document.getElementById('ls-tahun').value);
+    
+    document.getElementById('ls-table-body').innerHTML = '<div class="text-center py-4 text-muted small"><i class="fas fa-circle-notch fa-spin"></i> Memuat...</div>';
+    
+    google.script.run.withSuccessHandler(function(result) {
+      document.getElementById('ls-total-ziyadah').innerText = result.summary.ziyadah;
+      document.getElementById('ls-total-murajaah').innerText = result.summary.murajaah;
+      document.getElementById('ls-total-setor').innerText = result.summary.totalSetor;
+      
+      var tbody = document.getElementById('ls-table-body');
+      
+      if (result.records.length === 0) {
+        tbody.innerHTML = '<div class="text-center py-4 text-muted small">Tidak ada data setoran untuk periode ini.</div>';
+        return;
+      }
+      
+      var html = '';
+      result.records.forEach(function(item) {
+        var isZ = item.tipe === 'Ziyadah';
+        var tipeColor = isZ ? '#EF4444' : '#10B981';
+        var tipeBg = isZ ? '#FEF2F2' : '#ECFDF5';
+        
+        html += '<div class="d-flex align-items-center py-2 px-2 border-bottom" style="font-size:10px;">'
+          + '<div style="width:25px; color:#94A3B8;">' + item.no + '</div>'
+          + '<div style="width:95px; color:#64748B;">' + escapeHtml(item.tanggal) + '</div>'
+          + '<div style="width:55px; text-align:center;"><span style="background:' + tipeBg + '; color:' + tipeColor + '; padding:2px 6px; border-radius:4px; font-size:8px; font-weight:700;">' + item.tipe.substring(0, 1) + '</span></div>'
+          + '<div style="flex:1; font-weight:600; color:#1E293B;">' + escapeHtml(item.surat) + '</div>'
+          + '<div style="width:50px; text-align:center; color:#64748B;">' + escapeHtml(item.ayat) + '</div>'
+          + '<div style="width:65px; text-align:center; font-weight:600; color:#8B5CF6;">' + escapeHtml(item.nilai) + '</div>'
+          + '</div>';
+      });
+      
+      tbody.innerHTML = html;
+      
+    }).getSantriMonthlyReport(currentLaporanSantriNIS, bulanAwal, bulanAkhir, tahun);
+  }
+  
+  function printSantriLaporan() {
+    var bulanAwal = document.getElementById('ls-bulan-awal');
+    var bulanAkhir = document.getElementById('ls-bulan-akhir');
+    var tahun = document.getElementById('ls-tahun').value;
+    
+    var bAwalText = bulanAwal.options[bulanAwal.selectedIndex].text;
+    var bAkhirText = bulanAkhir.options[bulanAkhir.selectedIndex].text;
+    var periode = (bAwalText === bAkhirText) ? bAwalText + ' ' + tahun : bAwalText + ' - ' + bAkhirText + ' ' + tahun;
+    
+    var summary = {
+      ziyadah: document.getElementById('ls-total-ziyadah').innerText,
+      murajaah: document.getElementById('ls-total-murajaah').innerText,
+      setor: document.getElementById('ls-total-setor').innerText
+    };
+    
+    var rows = document.getElementById('ls-table-body').children;
+    var tableRows = '';
+    for (var i = 0; i < rows.length; i++) {
+      var cells = rows[i].children;
+      if (cells.length >= 6) {
+        tableRows += '<tr>'
+          + '<td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[0].innerText + '</td>'
+          + '<td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[1].innerText + '</td>'
+          + '<td class="tc" style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[2].innerText + '</td>'
+          + '<td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;font-weight:600;">' + cells[3].innerText + '</td>'
+          + '<td class="tc" style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[4].innerText + '</td>'
+          + '<td class="tc" style="padding:8px;border-bottom:1px solid #eee;font-size:12px;">' + cells[5].innerText + '</td>'
+          + '</tr>';
+      }
+    }
+    
+    var printContent = '<!DOCTYPE html><html><head><title>Laporan ' + currentLaporanSantriNama + '</title>'
+      + '<style>'
+      + 'body{font-family:Arial,sans-serif;padding:30px;color:#333;}'
+      + 'h1{font-size:18px;text-align:center;margin-bottom:5px;}'
+      + '.periode{text-align:center;font-size:12px;color:#666;margin-bottom:5px;}'
+      + '.nama{text-align:center;font-size:14px;font-weight:bold;margin:15px 0;}'
+      + '.summary{display:flex;justify-content:space-between;margin:20px 0;padding:15px 20px;background:#f5f5f5;border-radius:8px;}'
+      + '.summary-item{text-align:center;flex:1;}'
+      + '.summary-item .num{font-size:14px;font-weight:bold;}'
+      + '.summary-item .lbl{font-size:14px;color:#333;}'
+      + 'table{width:100%;border-collapse:collapse;margin-top:15px;}'
+      + 'th{background:#f0f0f0;padding:8px;font-size:11px;text-align:left;border-bottom:2px solid #ddd;}'
+      + '.tc{text-align:center;}'
+      + '.footer{margin-top:30px;font-size:10px;color:#999;text-align:center;}'
+      + '</style></head><body>'
+      + '<h1>LAPORAN HAFALAN PER SANTRI</h1>'
+      + '<p class="periode">Periode: ' + periode + '</p>'
+      + '<div class="nama">' + currentLaporanSantriNama + '</div>'
+      + '<div class="summary">'
+      + '<div class="summary-item"><span class="num" style="color:#EF4444;">' + summary.ziyadah + '</span> <span class="lbl">Ayat Ziyadah</span></div>'
+      + '<div class="summary-item"><span class="num" style="color:#10B981;">' + summary.murajaah + '</span> <span class="lbl">Ayat Murajaah</span></div>'
+      + '<div class="summary-item"><span class="num" style="color:#F59E0B;">' + summary.setor + '</span> <span class="lbl">Total Setoran</span></div>'
+      + '</div>'
+      + '<table><thead><tr><th>No</th><th>Tanggal</th><th>Tipe</th><th>Surat</th><th>Ayat</th><th>Nilai</th></tr></thead>'
+      + '<tbody>' + tableRows + '</tbody></table>'
+      + '<div class="footer">Dicetak pada ' + new Date().toLocaleDateString('id-ID', {day:'numeric',month:'long',year:'numeric'}) + '</div>'
+      + '</body></html>';
+    
+    var printWindow = window.open('', '_blank');
+    printWindow.document.write(printContent);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(function() { printWindow.print(); }, 500);
+  }
+  
+</script>

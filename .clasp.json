@@ -1,0 +1,9 @@
+{
+  "rootDir": ".",
+  "scriptId": "",
+  "filePushIgnore": [
+    "*.gs.bak",
+    "*.html.bak",
+    ".clasp.json"
+  ]
+}
