@@ -7,11 +7,17 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Hifdzul Qur'an App</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #065f46; }
-    iframe { width: 100%; height: 100%; border: none; display: block; }
+    
+    /* iframe tersembunyi dulu, baru muncul setelah loading selesai */
+    #app-frame { 
+      width: 100%; height: 100%; border: none; display: block;
+      opacity: 0; transition: opacity 0.3s ease;
+    }
+    #app-frame.show { opacity: 1; }
+    
     #loading {
       position: fixed; top: 0; left: 0; width: 100%; height: 100%;
       background: linear-gradient(180deg, #065f46 0%, #10b981 50%, #d1fae5 100%);
@@ -60,20 +66,20 @@
       history.pushState(null, '', location.href);
     });
 
-    // Loading screen - sembunyi lebih cepat
     var frame = document.getElementById('app-frame');
     var loading = document.getElementById('loading');
 
     // Fallback: sembunyikan loading setelah 5 detik max
     var loadTimeout = setTimeout(function() {
       loading.classList.add('hide');
+      frame.classList.add('show');
     }, 5000);
 
     frame.onload = function() {
       clearTimeout(loadTimeout);
-      // Tunggu sebentar lalu sembunyikan loading
       setTimeout(function() {
         loading.classList.add('hide');
+        frame.classList.add('show');
       }, 800);
     };
   </script>
