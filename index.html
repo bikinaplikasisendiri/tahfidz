@@ -11,12 +11,12 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #065f46; }
-    iframe { width: 100%; height: 100%; border: none; }
+    iframe { width: 100%; height: 100%; border: none; display: block; }
     #loading {
       position: fixed; top: 0; left: 0; width: 100%; height: 100%;
       background: linear-gradient(180deg, #065f46 0%, #10b981 50%, #d1fae5 100%);
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      z-index: 99999; transition: opacity 0.4s ease;
+      z-index: 99999; transition: opacity 0.3s ease-out;
     }
     #loading.hide { opacity: 0; pointer-events: none; }
     #loading .icon {
@@ -51,33 +51,30 @@
     id="app-frame"
     src="https://script.google.com/macros/s/AKfycbx5wBJQ542JamHOfs7Xtc98RMYWXJ1yJw00aA0udNTKPy6xZHAmeUWgO9eyCLlqRIVX/exec"
     allow="camera; geolocation; clipboard-write"
-    sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
   ></iframe>
 
   <script>
     // === FIX: Cegah WebView close saat tombol back/gesture ditekan ===
-    // Push history kosong agar WebView tidak langsung close
     history.pushState(null, '', location.href);
     window.addEventListener('popstate', function(event) {
       history.pushState(null, '', location.href);
     });
 
-    // Sembunyikan loading setelah iframe loaded
+    // Loading screen - sembunyi lebih cepat
     var frame = document.getElementById('app-frame');
     var loading = document.getElementById('loading');
+
+    // Fallback: sembunyikan loading setelah 5 detik max
     var loadTimeout = setTimeout(function() {
       loading.classList.add('hide');
-    }, 8000);
+    }, 5000);
 
     frame.onload = function() {
       clearTimeout(loadTimeout);
+      // Tunggu sebentar lalu sembunyikan loading
       setTimeout(function() {
         loading.classList.add('hide');
-      }, 1500);
-    };
-
-    frame.onerror = function() {
-      loading.innerHTML = '<div class="icon"><svg viewBox="0 0 24 24" fill="white"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div><div class="text">Gagal memuat aplikasi</div>';
+      }, 800);
     };
   </script>
 </body>
