@@ -8,12 +8,6 @@
   var pendingDeleteAction = null;
   var prayerCountdownInterval = null;
   var bigClockInterval = null;
-  var sessionCheckInterval = null;
-  
-  // SESSION TIMEOUT: 8 jam (dalam milidetik)
-  var SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000;
-  // Cek session setiap 1 menit
-  var SESSION_CHECK_INTERVAL_MS = 60 * 1000;
   
   // Juz Detail Variables
   var currentJuzFilter = 'all';
@@ -26,99 +20,6 @@
   var savedCity = localStorage.getItem('hifdzul_city') || "Jakarta";
   var savedLat = localStorage.getItem('hifdzul_lat');
   var savedLong = localStorage.getItem('hifdzul_long');
-
-  // --- SESSION TIMEOUT FUNCTIONS ---
-  
-  // Cek apakah session masih valid
-  function isSessionValid_() {
-    if (!curUser || !curUser.loginTime) return false;
-    var now = Date.now();
-    var elapsed = now - curUser.loginTime;
-    return elapsed < SESSION_TIMEOUT_MS;
-  }
-  
-  // Dalam berapa menit session akan expired
-  function getSessionRemainingMinutes_() {
-    if (!curUser || !curUser.loginTime) return 0;
-    var now = Date.now();
-    var elapsed = now - curUser.loginTime;
-    var remaining = SESSION_TIMEOUT_MS - elapsed;
-    return Math.max(0, Math.ceil(remaining / 60000));
-  }
-  
-  // Update loginTime (reset timeout) saat user aktif
-  function refreshSession_() {
-    if (curUser) {
-      curUser.loginTime = Date.now();
-      localStorage.setItem('hifdzul_user', JSON.stringify(curUser));
-    }
-  }
-  
-  // Force logout karena session expired
-  function forceLogout_(reason) {
-    // Bersihkan interval
-    if (sessionCheckInterval) {
-      clearInterval(sessionCheckInterval);
-      sessionCheckInterval = null;
-    }
-    if (prayerCountdownInterval) {
-      clearInterval(prayerCountdownInterval);
-      prayerCountdownInterval = null;
-    }
-    if (bigClockInterval) {
-      clearInterval(bigClockInterval);
-      bigClockInterval = null;
-    }
-    
-    // Tampilkan pesan sebelum logout
-    var msg = reason || 'Sesi Anda telah berakhir. Silakan login kembali.';
-    showToast(msg, 'warning');
-    
-    // Bersihkan session
-    curUser = null;
-    localStorage.removeItem('hifdzul_user');
-    document.getElementById('username').value = '';
-    document.getElementById('password').value = '';
-    
-    // Kembali ke halaman login
-    setTimeout(function() {
-      changeScreen('screen-welcome');
-    }, 1500);
-  }
-  
-  // Mulai interval pengecekan session
-  function startSessionChecker_() {
-    // Bersihkan interval lama jika ada
-    if (sessionCheckInterval) {
-      clearInterval(sessionCheckInterval);
-    }
-    
-    sessionCheckInterval = setInterval(function() {
-      if (curUser && !isSessionValid_()) {
-        forceLogout_('Sesi 8 jam telah habis. Silakan login kembali.');
-      }
-    }, SESSION_CHECK_INTERVAL_MS);
-  }
-  
-  // Reset session timer saat user berinteraksi
-  function setupActivityTracker_() {
-    var events = ['mousedown', 'keydown', 'touchstart', 'scroll'];
-    var throttleTimer = null;
-    
-    events.forEach(function(event) {
-      document.addEventListener(event, function() {
-        // Throttle: hanya refresh setiap 1 menit
-        if (throttleTimer) return;
-        throttleTimer = setTimeout(function() {
-          throttleTimer = null;
-        }, 60000);
-        
-        if (curUser && isSessionValid_()) {
-          refreshSession_();
-        }
-      }, { passive: true });
-    });
-  }
 
   // --- DATABASE AL-QURAN (Nama, Jumlah Ayat, Mulai Juz) ---
   const quranDB = [
@@ -282,7 +183,7 @@
       });
     }
 
-    // 4. CEK SESI LOGIN (UPDATED: Session Timeout)
+    // 4. CEK SESI LOGIN (TETAP)
     var savedUser = localStorage.getItem('hifdzul_user');
     
     setTimeout(function() {
@@ -294,27 +195,13 @@
       try {
         curUser = JSON.parse(savedUser);
         if (curUser && curUser.nama) {
-          // Cek apakah session masih valid
-          if (!isSessionValid_()) {
-            // Session expired, force logout
-            curUser = null;
-            localStorage.removeItem('hifdzul_user');
-            showToast('Sesi telah berakhir. Silakan login kembali.', 'warning');
-            changeScreen('screen-welcome');
-          } else {
-            // Session masih valid, mulai pengecekan berkala
-            var greetEl = document.getElementById('user-greeting');
-            if (greetEl) greetEl.innerText = "Assalamu'alaikum, " + curUser.nama.split(' ')[0];
+          var greetEl = document.getElementById('user-greeting');
+          if (greetEl) greetEl.innerText = "Assalamu'alaikum, " + curUser.nama.split(' ')[0];
 
-            updateUIByRole();
-            changeScreen('screen-app'); 
-            loadHistory();
-            loadNotifications();
-            
-            // Mulai session checker & activity tracker
-            startSessionChecker_();
-            setupActivityTracker_();
-          }
+          updateUIByRole();
+          changeScreen('screen-app'); 
+          loadHistory();
+          loadNotifications();
         } else {
            changeScreen('screen-welcome'); 
         }
@@ -1472,10 +1359,6 @@
     closeLogoutModal();
     
     // Clear all intervals
-    if (sessionCheckInterval) {
-      clearInterval(sessionCheckInterval);
-      sessionCheckInterval = null;
-    }
     if (prayerCountdownInterval) {
       clearInterval(prayerCountdownInterval);
       prayerCountdownInterval = null;
@@ -1502,20 +1385,12 @@
     google.script.run.withSuccessHandler(function(res) {
       if (res.status === 'success') {
         curUser = res;
-        // Pastikan loginTime ada (backward compatibility)
-        if (!curUser.loginTime) {
-          curUser.loginTime = Date.now();
-        }
         localStorage.setItem('hifdzul_user', JSON.stringify(res));
         document.getElementById('user-greeting').innerText = "Assalamu'alaikum, " + res.nama.split(' ')[0];
         updateUIByRole();
         changeScreen('screen-app');
         loadHistory();
         loadNotifications();
-        
-        // Mulai session checker & activity tracker
-        startSessionChecker_();
-        setupActivityTracker_();
       } else {
         showToast(res.message, 'error');
         btn.innerHTML = 'Masuk Aplikasi';
@@ -1912,15 +1787,7 @@
               }).getGeoLocation(lat, long);
 
           }, function(error) {
-              var msg = 'Gagal mendeteksi lokasi.';
-              if (error.code === 1) {
-                  msg = 'Izin lokasi ditolak. Buka Pengaturan Android > Aplikasi > E-TAHFIDZ > Izin > Lokasi > Aktifkan.';
-              } else if (error.code === 2) {
-                  msg = 'GPS tidak aktif. Aktifkan GPS di Pengaturan > Lokasi.';
-              } else if (error.code === 3) {
-                  msg = 'Timeout GPS. Coba lagi di tempat terbuka.';
-              }
-              showToast(msg, 'error');
+              showToast('Gagal mendeteksi lokasi. Pastikan Izin GPS Diberikan.', 'error');
               btn.innerHTML = oldText;
           });
       } else {
