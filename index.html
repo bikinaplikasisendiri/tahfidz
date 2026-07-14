@@ -31,7 +31,7 @@
       margin-bottom: 16px; backdrop-filter: blur(10px);
       animation: pulse 1.5s ease-in-out infinite;
     }
-    #loading .icon svg { width: 32px; height: 32px; fill: white; }
+    #loading .icon { font-size: 32px; line-height: 1; }
     #loading .spinner {
       width: 28px; height: 28px; border: 3px solid rgba(255,255,255,0.3);
       border-top-color: white; border-radius: 50%;
@@ -45,9 +45,7 @@
 <body>
   <!-- Loading Screen -->
   <div id="loading">
-    <div class="icon">
-      <svg viewBox="0 0 24 24"><path d="M6 2C4.9 2 4 2.9 4 4v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6H6zm7 1.5L18.5 9H13V3.5zM8 14c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2s-.9 2-2 2h-4c-1.1 0-2-.9-2-2zm0 4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2s-.9 2-2 2h-4c-1.1 0-2-.9-2-2z"/></svg>
-    </div>
+    <div class="icon" style="font-size: 32px; color: white;">&#128214;</div>
     <div class="spinner"></div>
     <div class="text">Memuat aplikasi...</div>
   </div>
